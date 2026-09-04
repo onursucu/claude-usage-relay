@@ -1,0 +1,20 @@
+{
+  "name": "claude-usage-relay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Track your Claude Code 5-hour usage window and get a phone notification when a new window starts - even while your computer is off.",
+  "license": "MIT",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "server": "npm run start --workspace @claude-usage-relay/notify-server",
+    "test": "npm test --workspace @claude-usage-relay/notify-server",
+    "e2e": "node scripts/e2e.mjs",
+    "install-statusline": "node scripts/install-statusline.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@claude-usage-relay/usage-agent",
+  "version": "0.1.0",
+  "description": "Claude Code status line widget that also relays your usage window to a notify-server.",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/statusline.js",
+  "bin": {
+    "claude-usage-statusline": "src/statusline.js"
+  },
+  "scripts": {
+    "statusline": "node src/statusline.js",
+    "relay": "node src/relay.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}

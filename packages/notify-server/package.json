@@ -1,0 +1,17 @@
+{
+  "name": "@claude-usage-relay/notify-server",
+  "version": "0.1.0",
+  "description": "Server that receives usage reports and pushes a notification when a new Claude usage window starts or resets.",
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/*.test.js",
+    "test:notify": "node src/index.js --test-notification"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {}
+}
