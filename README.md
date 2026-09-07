@@ -66,56 +66,27 @@ On any always-on machine — a VPS, a home server, a Raspberry Pi. Node.js 20+, 
 dependencies to install.
 
 ```bash
-git clone <this repo> && cd claude-usage-relay/packages/notify-server
-cp .env.example .env
+git clone https://github.com/onursucu/claude-usage-relay /opt/claude-usage-relay
+cd /opt/claude-usage-relay
+bash scripts/setup-server.sh --systemd
 ```
 
-Fill in `.env`:
+That generates the two secrets, writes `packages/notify-server/.env`, installs a
+systemd unit and starts it. It prints the ntfy topic and the relay token you will
+need for the next two steps. Re-running it never overwrites an existing `.env`.
 
-```ini
-RELAY_TOKEN=<a long random string>
-NTFY_TOPIC=<a long random topic name>
-NOTIFY_LANGUAGE=en
-DISPLAY_TIMEZONE=Europe/Istanbul
-```
+Leave off `--systemd` to only write the config and run the server yourself with
+`npm start`. Everything the script sets can be edited afterwards in
+`packages/notify-server/.env`, which documents every option — `NOTIFY_LANGUAGE`,
+`DISPLAY_TIMEZONE` and `USAGE_THRESHOLDS` are the ones most people change.
 
-Generate both secrets:
+Check that notifications actually arrive before going further:
 
 ```bash
-node -e "console.log('RELAY_TOKEN=' + require('crypto').randomBytes(32).toString('hex'))"
-node -e "console.log('NTFY_TOPIC=claude-' + require('crypto').randomBytes(8).toString('hex'))"
+cd packages/notify-server && npm run test:notify
 ```
 
-Check that notifications work before going further:
-
-```bash
-npm run test:notify
-```
-
-Then run it for real. With systemd:
-
-```ini
-# /etc/systemd/system/claude-usage-relay.service
-[Unit]
-Description=claude-usage-relay notify-server
-After=network.target
-
-[Service]
-Type=simple
-User=<service user>
-WorkingDirectory=/opt/claude-usage-relay/packages/notify-server
-ExecStart=/usr/bin/node src/index.js
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-sudo systemctl enable --now claude-usage-relay
-```
-
-It listens on `127.0.0.1:8787` by default, so put your existing reverse proxy in
+The server listens on `127.0.0.1:8787`, so put your existing reverse proxy in
 front of it and give it TLS:
 
 ```nginx
