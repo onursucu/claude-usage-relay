@@ -103,7 +103,66 @@ subscribe to the topic you generated. That is the whole setup.
 
 > On the public `ntfy.sh` instance a topic is readable by anyone who knows its
 > name, so treat the name as a secret — hence the random one above. For real
-> privacy, [self-host ntfy](https://docs.ntfy.sh/install/) and set `NTFY_TOKEN`.
+> privacy, self-host ntfy as described below.
+
+### Optional: self-hosting ntfy
+
+Worth it if you would rather no third party saw your notifications at all. On
+Debian/Ubuntu, [install ntfy from its apt repository](https://docs.ntfy.sh/install/),
+then keep `/etc/ntfy/server.yml` this small:
+
+```yaml
+base-url: "https://ntfy.your-domain.example"
+listen-http: "127.0.0.1:2586"       # only your reverse proxy reaches it
+cache-file: "/var/cache/ntfy/cache.db"
+cache-duration: "12h"
+auth-file: "/var/lib/ntfy/user.db"
+auth-default-access: "deny-all"     # this line is the privacy
+behind-proxy: true                  # trust X-Forwarded-For for rate limiting
+```
+
+Then give each side only the access it needs — the server publishes, the phone
+reads, and nobody else can do either:
+
+```bash
+ntfy user add relay                 # notify-server publishes as this user
+ntfy access relay <topic> write
+ntfy token add relay                # put the token in NTFY_TOKEN
+
+ntfy user add phone                 # your phone reads as this user
+ntfy access phone <topic> read
+```
+
+Point `NTFY_URL` at your own instance and you are done. Two things that are
+easy to get wrong:
+
+- **`deny-all` really means all.** Confirm it: an unauthenticated
+  `curl https://ntfy.your-domain.example/<topic>/json?poll=1` must return `403`.
+  A write-only token failing to *read* is also correct, not a bug.
+- **The subscription is a long-lived stream.** Whatever proxies ntfy needs
+  `proxy_http_version 1.1`, the `Upgrade`/`Connection` headers, a long
+  `proxy_read_timeout` (default 60s will cut the connection repeatedly) and
+  `proxy_buffering off`, or messages arrive late.
+
+#### If you are behind aaPanel
+
+aaPanel can host both services, with one trap: when you add a reverse proxy it
+prefills **Proxy directory** with the domain name. That is a URL *path*, so the
+proxy then only answers on `https://your-domain.example/your-domain.example/…`
+and everything else falls through to the empty site root as a 404. Set it to `/`.
+
+Its proxy template does include the WebSocket headers, but not the timeouts, so
+append these to the generated file in
+`/www/server/panel/vhost/nginx/proxy/<domain>/`:
+
+```nginx
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+proxy_buffering off;
+proxy_cache off;
+```
+
+Re-editing the proxy in the aaPanel UI regenerates that file and drops them.
 
 ### 3. Each machine you work on
 
