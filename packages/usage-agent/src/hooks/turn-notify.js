@@ -11,6 +11,7 @@
  *   UserPromptSubmit   stamps when the turn started
  *   Stop               the turn ended - push if it ran long enough to matter
  *   StopFailure        the turn died on an API error - always worth knowing
+ *   Notification       Claude is waiting on you, and you are not at the desk
  *
  * All three are registered with `"async": true`, so Claude Code starts this
  * process and carries on without waiting: a slow or unreachable server can
@@ -66,23 +67,32 @@ function markPath(sessionId) {
   return path.join(MARK_DIR, `${safe}.json`);
 }
 
-function markStart(sessionId, startedAt) {
+/** Returns null when there is no mark - the hook was installed mid-session. */
+function readMark(sessionId) {
+  try {
+    const mark = JSON.parse(fs.readFileSync(markPath(sessionId), 'utf8'));
+    return mark && typeof mark === 'object' ? mark : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeMark(sessionId, mark) {
   try {
     fs.mkdirSync(MARK_DIR, { recursive: true });
-    fs.writeFileSync(markPath(sessionId), JSON.stringify({ started_at: startedAt }));
+    fs.writeFileSync(markPath(sessionId), JSON.stringify(mark));
   } catch {
     // A mark we failed to write costs one notification, nothing more.
   }
 }
 
-/** Returns null when there is no mark - the hook was installed mid-session. */
+function markStart(sessionId, startedAt) {
+  writeMark(sessionId, { started_at: startedAt });
+}
+
 function readStart(sessionId) {
-  try {
-    const { started_at: startedAt } = JSON.parse(fs.readFileSync(markPath(sessionId), 'utf8'));
-    return Number.isFinite(startedAt) ? startedAt : null;
-  } catch {
-    return null;
-  }
+  const startedAt = readMark(sessionId)?.started_at;
+  return Number.isFinite(startedAt) ? startedAt : null;
 }
 
 function clearStart(sessionId) {
@@ -184,6 +194,51 @@ async function deliver(event) {
   }
 }
 
+/**
+ * Claude is waiting on you. The installer only subscribes to the notification
+ * types that mean that - a permission prompt, or an agent asking for input -
+ * and deliberately not to `idle_prompt`, which fires about a minute after
+ * Claude *finished* and would duplicate the turn_done push.
+ *
+ * Two gates keep this quiet. A turn younger than the threshold means you are
+ * almost certainly still at the keyboard, watching the prompt that just
+ * appeared; and a cooldown stops a job that stalls for an hour from buzzing
+ * every six seconds.
+ */
+async function handleWaiting(input, { now, project }) {
+  if (!config.turnNotify.onWaiting) return;
+
+  const kind = input.notification_type;
+  if (kind && kind !== 'permission_prompt' && kind !== 'agent_needs_input') return;
+
+  const sessionId = input.session_id;
+  const mark = readMark(sessionId);
+  const startedAt = mark?.started_at;
+  // Without a mark there is no way to tell a job you walked away from apart
+  // from one you are sitting in front of, so say nothing.
+  if (!Number.isFinite(startedAt)) return;
+
+  const runningSeconds = Math.round((now - startedAt) / 1000);
+  if (runningSeconds < config.turnNotify.waitingAfterSeconds) return;
+
+  const notifiedAt = mark?.waiting_notified_at;
+  if (Number.isFinite(notifiedAt) && (now - notifiedAt) / 1000 < config.turnNotify.waitingCooldownSeconds) {
+    return;
+  }
+
+  writeMark(sessionId, { ...mark, waiting_notified_at: now });
+
+  await deliver({
+    type: 'turn_waiting',
+    device: config.device,
+    account: config.account,
+    project,
+    duration_seconds: runningSeconds,
+    reason: typeof kind === 'string' ? kind : 'unknown',
+    detail: summarize(input.message),
+  });
+}
+
 async function main() {
   let input;
   try {
@@ -200,6 +255,11 @@ async function main() {
   if (input.hook_event_name === 'UserPromptSubmit') {
     markStart(sessionId, now);
     pruneMarks(now);
+    return;
+  }
+
+  if (input.hook_event_name === 'Notification') {
+    await handleWaiting(input, { now, project });
     return;
   }
 

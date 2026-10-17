@@ -36,6 +36,7 @@ clock, not from your machine, so it still reaches you when your laptop is closed
 | **Limit reset** | The one that matters when you are away from the desk. Fires from the server. |
 | **A long turn finished** | Walk away from a job that takes an hour and hear about it when it ends, with the first lines of the answer. Short turns stay silent. |
 | **A long turn died** | A rate limit or an overloaded API killed the job after forty minutes. You find out now, not at midnight. |
+| **A long turn is stuck** | The job you walked away from stopped at minute three for a permission prompt. Without this it would simply sit there. |
 | **Several machines** | Every machine reports the same account-level figures, so they simply agree. No syncing between your computers. |
 | **Several accounts** | Switch between a personal and a work account and each keeps its own window, thresholds and reset alert. The agent works out which one is signed in. |
 | **Nothing to leak** | The server never sees a Claude token — see below. |
@@ -227,6 +228,7 @@ That registers one script on three of Claude Code's hooks:
 | `UserPromptSubmit` | Stamps when the turn started. |
 | `Stop` | The turn ended. Pushes only if it ran past `NOTIFY_MIN_TURN_SECONDS`, with the opening lines of Claude's answer. |
 | `StopFailure` | The turn died on an API error — a rate limit, an overloaded API. Pushes whatever the duration. |
+| `Notification` | Claude stopped to ask you something. Subscribed to `permission_prompt` and `agent_needs_input` only — **not** `idle_prompt`, which fires a minute after Claude finishes and would double up on the turn-finished push. |
 
 All three are registered with `"async": true`, so Claude Code starts the hook
 and carries straight on. A slow server, an unreachable one, a hung request —
@@ -262,6 +264,8 @@ The ones worth knowing about:
 | `ACCOUNT_LABEL` | the signed-in account | Which account the numbers belong to. Leave empty to detect it; set it to name an account yourself. |
 | `NOTIFY_MIN_TURN_SECONDS` | `300` | How long a turn must run to earn a push. |
 | `NOTIFY_ON_TURN_FAILURE` | `true` | Push when a turn dies on an API error, however short. |
+| `NOTIFY_WAITING_AFTER_SECONDS` | `120` | How long a turn must have been running before "Claude is waiting on you" counts as news. Below it you are probably still watching the screen. |
+| `NOTIFY_WAITING_COOLDOWN_SECONDS` | `600` | Stops a job stalled for an hour from buzzing every few seconds. |
 
 ## Design notes
 

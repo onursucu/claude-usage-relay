@@ -88,6 +88,19 @@ const ERROR_LABELS = {
   },
 };
 
+
+/** Why Claude stopped to ask. Anything unlisted falls back to a plain wording. */
+const WAITING_REASONS = {
+  en: {
+    permission_prompt: 'it needs permission to continue',
+    agent_needs_input: 'an agent is asking for input',
+  },
+  tr: {
+    permission_prompt: 'devam etmek için izin bekliyor',
+    agent_needs_input: 'bir ajan girdi bekliyor',
+  },
+};
+
 const PACKS = {
   en: {
     window_start(event) {
@@ -136,6 +149,15 @@ const PACKS = {
       return {
         title: 'Claude · the job did not finish',
         message: [`${ran} — ${label}.`, where(event), event.detail].filter(Boolean).join('\n'),
+      };
+    },
+    turn_waiting(event) {
+      const duration = formatDuration(event.duration_seconds);
+      const why = WAITING_REASONS.en[event.reason] ?? 'it is waiting on you';
+      const ran = duration ? ` after ${duration.en}` : '';
+      return {
+        title: 'Claude · waiting on you',
+        message: [`Stopped${ran} — ${why}.`, where(event), event.detail].filter(Boolean).join('\n'),
       };
     },
     test() {
@@ -195,6 +217,15 @@ const PACKS = {
         message: [`${ran} — ${label}.`, where(event), event.detail].filter(Boolean).join('\n'),
       };
     },
+    turn_waiting(event) {
+      const duration = formatDuration(event.duration_seconds);
+      const why = WAITING_REASONS.tr[event.reason] ?? 'seni bekliyor';
+      const ran = duration ? `${duration.tr} çalıştıktan sonra` : 'Çalışırken';
+      return {
+        title: 'Claude · seni bekliyor',
+        message: [`${ran} durdu — ${why}.`, where(event), event.detail].filter(Boolean).join('\n'),
+      };
+    },
     test() {
       return {
         title: 'Claude usage relay · test',
@@ -212,6 +243,9 @@ const PRESENTATION = {
   window_reset: { priority: 4, tags: ['white_check_mark'] },
   threshold: { priority: 3, tags: ['warning'] },
   source_error: { priority: 2, tags: ['rotating_light'] },
+  // Waiting outranks finishing: a job that has stopped to ask is burning your
+  // wall clock doing nothing, and only you can unblock it.
+  turn_waiting: { priority: 5, tags: ['raised_hand'] },
   turn_done: { priority: 4, tags: ['checkered_flag'] },
   turn_failed: { priority: 5, tags: ['x'] },
   test: { priority: 3, tags: ['bell'] },

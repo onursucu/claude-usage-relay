@@ -220,6 +220,48 @@ await sleep(800);
 check('a failed turn is pushed whatever its length', pushed.some((item) => item.title?.includes('did not finish')), titles());
 check('the failure says why', pushed.some((item) => item.message?.includes('usage limit')), JSON.stringify(pushed.map((item) => item.message)));
 
+// A Notification with no turn on record cannot tell "away" from "at the desk".
+// Its own session id matters: StopFailure above deliberately leaves its mark.
+pushed.length = 0;
+await runHook(
+  { hook_event_name: 'Notification', session_id: 'e2e-never-prompted', cwd: '/home/e2e/my-project', notification_type: 'permission_prompt', message: 'needs permission' },
+  { NOTIFY_WAITING_AFTER_SECONDS: '0' },
+);
+await sleep(800);
+check('waiting with no turn on record stays quiet', pushed.length === 0, titles());
+
+pushed.length = 0;
+await runHook(turn('UserPromptSubmit', { prompt: 'go' }));
+await runHook(turn('Notification', { notification_type: 'permission_prompt', message: 'needs permission' }));
+await sleep(800);
+check('waiting on a young turn stays quiet', pushed.length === 0, titles());
+
+pushed.length = 0;
+
+await runHook(
+  turn('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission' }),
+  { NOTIFY_WAITING_AFTER_SECONDS: '0' },
+);
+await sleep(800);
+const waiting = pushed.find((item) => item.title?.includes('seni bekliyor') || item.title?.includes('waiting on you'));
+check('waiting on a long turn is pushed', Boolean(waiting), titles());
+check('the waiting push says why', waiting?.message?.includes('permission') === true, JSON.stringify(waiting?.message));
+
+pushed.length = 0;
+await runHook(
+  turn('Notification', { notification_type: 'permission_prompt', message: 'again' }),
+  { NOTIFY_WAITING_AFTER_SECONDS: '0' },
+);
+await sleep(800);
+check('a second waiting push is held back by the cooldown', pushed.length === 0, titles());
+
+await runHook(
+  turn('Notification', { notification_type: 'idle_prompt', message: 'idle' }),
+  { NOTIFY_WAITING_AFTER_SECONDS: '0', NOTIFY_WAITING_COOLDOWN_SECONDS: '0' },
+);
+await sleep(800);
+check('idle_prompt is ignored, so it cannot double up on turn_done', pushed.length === 0, titles());
+
 const faked = await fetch(`http://127.0.0.1:${SERVER_PORT}/notify`, {
   method: 'POST',
   headers: { 'content-type': 'application/json', authorization: `Bearer ${RELAY_TOKEN}` },

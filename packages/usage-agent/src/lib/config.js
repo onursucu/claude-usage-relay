@@ -63,6 +63,18 @@ export const config = {
      * the long job you walked away from, not about every answer.
      */
     minSeconds: num(process.env.NOTIFY_MIN_TURN_SECONDS, 300),
+
+    onWaiting: bool(process.env.NOTIFY_ON_TURN_WAITING, true),
+
+    /**
+     * How long a turn must already have been running before "Claude is waiting
+     * on you" is worth a push. Below this you are almost certainly still
+     * watching the screen that the prompt just appeared on.
+     */
+    waitingAfterSeconds: num(process.env.NOTIFY_WAITING_AFTER_SECONDS, 120),
+
+    /** A job stalled on a prompt must not buzz every time Claude re-asks. */
+    waitingCooldownSeconds: num(process.env.NOTIFY_WAITING_COOLDOWN_SECONDS, 600),
   },
 
   requestTimeoutMs: num(process.env.RELAY_TIMEOUT_MS, 8000),

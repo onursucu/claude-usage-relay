@@ -117,6 +117,10 @@ turn notifier through the exact payloads Claude Code sends it.
 
 Phase 2, the turn notifier, is written and tested: `src/hooks/turn-notify.js`
 plus `POST /notify`, installed with `node scripts/install-hooks.mjs --apply`.
+It covers a turn finishing, dying, and stalling on a prompt. The `Notification`
+subscription is narrowed to `permission_prompt` and `agent_needs_input` on
+purpose: `idle_prompt` fires about a minute after Claude finishes, so taking it
+would mean two pushes for one event.
 
 Multiple accounts work as of `src/lib/account.js`: the agent detects the
 signed-in account rather than reporting a fixed label, so switching accounts no
@@ -134,6 +138,10 @@ keeps its own expiry and fires a duplicate reset alert.
 3. **Optional standalone poller** — for usage data while Claude Code is not
    running. Must be opt-in, clearly marked as unofficial, and must never
    outrank a fresh status line reading.
-5. **Notification hook** — Claude Code also fires `Notification` when it has
-   been waiting on you for a permission prompt. A long job that quietly stalls
-   on an approval is exactly the case the turn notifier does not cover yet.
+4. **Weekly window alerts** — `detector.js` only ever reads `five_hour`, so the
+   `seven_day` window is stored and displayed but never alerted on. Doing it
+   means splitting `tracking` per window, and note the trap: `window-starter`'s
+   `evaluateStartRequest` reads `accountState.tracking.window_id` directly and
+   would silently stop guarding against a start while a window is open.
+5. **A dashboard token** — `GET /state` takes the relay token today, which is a
+   write credential. A browser should get a read-only one instead.

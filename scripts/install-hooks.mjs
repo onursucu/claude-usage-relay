@@ -7,6 +7,7 @@
  *   UserPromptSubmit   stamps when a turn started
  *   Stop               the turn ended - push if it ran past the threshold
  *   StopFailure        the turn died on an API error (a rate limit, say)
+ *   Notification       Claude is waiting on you, during a job you left running
  *
  * Every entry is registered with "async": true, so Claude Code never waits for
  * the hook - the notification goes out while you carry on working.
@@ -31,8 +32,27 @@ const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.cl
 const SETTINGS = path.join(CONFIG_DIR, 'settings.json');
 const BACKUP = path.join(CONFIG_DIR, 'settings.json.hooks-backup');
 
-const EVENTS = ['UserPromptSubmit', 'Stop', 'StopFailure'];
 const COMMAND = `node "${HOOK}"`;
+const ENTRY = { type: 'command', command: COMMAND, async: true };
+
+/**
+ * Which groups we want on each event. Notification is the only one that needs
+ * matchers: it fires for a dozen kinds of notification and we want exactly the
+ * two that mean "Claude has stopped and needs you". `idle_prompt` is pointedly
+ * absent - it fires about a minute after Claude finished, so subscribing to it
+ * would double up on the turn_done push.
+ */
+const PLAN = {
+  UserPromptSubmit: [{ hooks: [ENTRY] }],
+  Stop: [{ hooks: [ENTRY] }],
+  StopFailure: [{ hooks: [ENTRY] }],
+  Notification: [
+    { matcher: 'permission_prompt', hooks: [ENTRY] },
+    { matcher: 'agent_needs_input', hooks: [ENTRY] },
+  ],
+};
+
+const EVENTS = Object.keys(PLAN);
 
 const apply = process.argv.includes('--apply');
 const revert = process.argv.includes('--revert');
@@ -74,10 +94,9 @@ function withoutOurs(groups) {
     .filter((group) => group.hooks.length > 0);
 }
 
-const ours = { hooks: [{ type: 'command', command: COMMAND, async: true }] };
 const nextHooks = { ...hooks };
 for (const event of EVENTS) {
-  nextHooks[event] = [...withoutOurs(hooks[event]), ours];
+  nextHooks[event] = [...withoutOurs(hooks[event]), ...PLAN[event]];
 }
 
 const next = { ...settings, hooks: nextHooks };

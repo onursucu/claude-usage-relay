@@ -18,7 +18,7 @@ const RESET_CHECK_INTERVAL_MS = 30_000;
  * events are the detector's to decide, and a leaked relay token should not be
  * able to fake a reset. These are the ones only the client can know about.
  */
-const CLIENT_EVENT_TYPES = new Set(['turn_done', 'turn_failed', 'test']);
+const CLIENT_EVENT_TYPES = new Set(['turn_done', 'turn_failed', 'turn_waiting', 'test']);
 
 const detectorOptions = {
   onWindowStart: config.notify.onWindowStart,
