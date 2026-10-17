@@ -12,9 +12,9 @@ const OPTIONS = {
   onWindowStart: true,
   onWindowReset: true,
   onSourceError: true,
-  thresholds: [80, 95],
+  thresholds: { five_hour: [80, 95], seven_day: [50, 80, 95] },
   sourceErrorCooldownMinutes: 180,
-  resetGraceMinutes: 30,
+  resetGraceMinutes: { five_hour: 30, seven_day: 180 },
   freshWindowMinutes: 10,
   onStartOk: true,
   onStartFailed: true,
@@ -24,8 +24,10 @@ const OPTIONS = {
 const NOW = Date.parse('2026-09-04T12:00:00.000Z');
 const minutes = (count) => count * 60_000;
 
+// The weekly window is opt-in per test rather than always present, so the
+// tests written before it existed keep describing exactly what they did.
 function report(overrides = {}) {
-  const { five_hour: fiveHour, ...rest } = overrides;
+  const { five_hour: fiveHour, seven_day: sevenDay, ...rest } = overrides;
   return {
     schema_version: 1,
     provider: 'claude',
@@ -39,17 +41,28 @@ function report(overrides = {}) {
         resets_at: new Date(NOW + minutes(298)).toISOString(),
         ...fiveHour,
       },
+      ...(sevenDay
+        ? {
+            seven_day: {
+              used_percentage: 10,
+              resets_at: new Date(NOW + minutes(5 * 24 * 60)).toISOString(),
+              ...sevenDay,
+            },
+          }
+        : {}),
     },
     ...rest,
   };
 }
+
+const weekly = () => report({ seven_day: {} });
 
 test('a first sighting of a fresh window is announced', () => {
   const { state, events } = ingestReport({ accountState: null, report: report(), options: OPTIONS, now: NOW });
 
   assert.equal(events.length, 1);
   assert.equal(events[0].type, 'window_start');
-  assert.equal(state.tracking.window_id, report().windows.five_hour.resets_at);
+  assert.equal(state.tracking.five_hour.window_id, report().windows.five_hour.resets_at);
 });
 
 test('a first sighting of a window already underway is adopted silently', () => {
@@ -58,8 +71,8 @@ test('a first sighting of a window already underway is adopted silently', () => 
   const { state, events } = ingestReport({ accountState: null, report: midWindow, options: OPTIONS, now: NOW });
 
   assert.deepEqual(events.map((event) => event.type), []);
-  assert.equal(state.tracking.start_notified_at, null);
-  assert.equal(state.tracking.window_id, midWindow.windows.five_hour.resets_at);
+  assert.equal(state.tracking.five_hour.start_notified_at, null);
+  assert.equal(state.tracking.five_hour.window_id, midWindow.windows.five_hour.resets_at);
 });
 
 test('a changed resets_at is treated as a new window', () => {
@@ -123,7 +136,7 @@ test('each threshold fires once per window', () => {
 
 test('the reset fires from the clock alone, once', () => {
   const { state } = ingestReport({ accountState: null, report: report(), options: OPTIONS, now: NOW });
-  const resetMoment = Date.parse(state.tracking.window_id) + minutes(1);
+  const resetMoment = Date.parse(state.tracking.five_hour.window_id) + minutes(1);
 
   const first = checkWindowReset({ accountState: state, options: OPTIONS, now: resetMoment });
   assert.deepEqual(first.events.map((event) => event.type), ['window_reset']);
@@ -134,12 +147,12 @@ test('the reset fires from the clock alone, once', () => {
 
 test('a reset missed by hours is marked handled without notifying', () => {
   const { state } = ingestReport({ accountState: null, report: report(), options: OPTIONS, now: NOW });
-  const wayLate = Date.parse(state.tracking.window_id) + minutes(300);
+  const wayLate = Date.parse(state.tracking.five_hour.window_id) + minutes(300);
 
   const result = checkWindowReset({ accountState: state, options: OPTIONS, now: wayLate });
 
   assert.deepEqual(result.events, []);
-  assert.ok(result.state.tracking.reset_notified_at);
+  assert.ok(result.state.tracking.five_hour.reset_notified_at);
 });
 
 test('a window that has not expired yet produces nothing', () => {
@@ -207,6 +220,100 @@ test('devices are tracked separately while the account state stays shared', () =
 });
 
 // --- opening a window on request -------------------------------------------
+
+test('a weekly window is tracked but never announced', () => {
+  const { state, events } = ingestReport({ accountState: null, report: weekly(), options: OPTIONS, now: NOW });
+
+  assert.deepEqual(events.map((event) => [event.type, event.window]), [['window_start', 'five_hour']]);
+  assert.ok(state.tracking.seven_day.window_id);
+  assert.equal(state.tracking.seven_day.start_notified_at, null, 'a week opening is the same news as the last one resetting');
+});
+
+test('the weekly window has thresholds of its own', () => {
+  const base = ingestReport({ accountState: null, report: weekly(), options: OPTIONS, now: NOW });
+
+  const crossed = ingestReport({
+    accountState: base.state,
+    report: report({ seven_day: { used_percentage: 55 } }),
+    options: OPTIONS,
+    now: NOW + minutes(60),
+  });
+
+  assert.deepEqual(
+    crossed.events.map((event) => [event.window, event.threshold]),
+    [['seven_day', 50]],
+    'the weekly warning starts earlier than the five-hour one',
+  );
+});
+
+test('the two windows cross thresholds without interfering', () => {
+  const base = ingestReport({ accountState: null, report: weekly(), options: OPTIONS, now: NOW });
+
+  const both = ingestReport({
+    accountState: base.state,
+    report: report({ five_hour: { used_percentage: 83 }, seven_day: { used_percentage: 85 } }),
+    options: OPTIONS,
+    now: NOW + minutes(60),
+  });
+
+  assert.deepEqual(both.events.map((event) => [event.window, event.threshold]), [
+    ['five_hour', 80],
+    ['seven_day', 50],
+    ['seven_day', 80],
+  ]);
+});
+
+test('the weekly reset fires from the clock, on a longer leash', () => {
+  const { state } = ingestReport({ accountState: null, report: weekly(), options: OPTIONS, now: NOW });
+  const weeklyReset = Date.parse(state.tracking.seven_day.window_id);
+
+  // An hour late. The five-hour window expired days ago and is long past its
+  // own grace, so it is settled silently; the week is still worth saying.
+  const result = checkWindowReset({ accountState: state, options: OPTIONS, now: weeklyReset + minutes(60) });
+
+  assert.deepEqual(result.events.map((event) => event.window), ['seven_day']);
+  assert.ok(result.state.tracking.five_hour.reset_notified_at, 'the stale five-hour window is still marked handled');
+});
+
+test('a weekly reset past even its own grace is marked handled without notifying', () => {
+  const { state } = ingestReport({ accountState: null, report: weekly(), options: OPTIONS, now: NOW });
+  const weeklyReset = Date.parse(state.tracking.seven_day.window_id);
+
+  const result = checkWindowReset({ accountState: state, options: OPTIONS, now: weeklyReset + minutes(240) });
+
+  assert.deepEqual(result.events, []);
+  assert.ok(result.state.tracking.seven_day.reset_notified_at);
+});
+
+test('state written before the weekly window existed is read, not re-announced', () => {
+  const windowId = new Date(NOW + minutes(298)).toISOString();
+  const legacy = {
+    provider: 'claude',
+    account: 'default',
+    windows: { five_hour: { used_percentage: 83, resets_at: windowId } },
+    devices: {},
+    // The flat shape, exactly as older servers wrote it.
+    tracking: {
+      window_id: windowId,
+      first_seen_at: new Date(NOW).toISOString(),
+      start_notified_at: new Date(NOW).toISOString(),
+      reset_notified_at: null,
+      thresholds_notified: [80],
+    },
+    source_error: null,
+  };
+
+  const { state, events } = ingestReport({
+    accountState: legacy,
+    report: report({ five_hour: { used_percentage: 85 } }),
+    options: OPTIONS,
+    now: NOW + minutes(60),
+  });
+
+  assert.deepEqual(events, [], 'an upgrade must not re-announce what the old shape already sent');
+  assert.equal(state.tracking.five_hour.window_id, windowId, 'the window keeps its identity across the reshape');
+  assert.deepEqual(state.tracking.five_hour.thresholds_notified, [80]);
+});
 
 const trackingFor = (resetsAtMs) => ({
   window_id: new Date(resetsAtMs).toISOString(),
@@ -320,7 +427,7 @@ test('the first report after a start confirms it and announces the real window',
   });
 
   assert.equal(state.pending_start, null, 'the pending start is settled by the real report');
-  assert.equal(state.tracking.window_id, new Date(NOW + minutes(290)).toISOString());
+  assert.equal(state.tracking.five_hour.window_id, new Date(NOW + minutes(290)).toISOString());
   assert.deepEqual(
     events.map((event) => event.type),
     ['window_start'],
@@ -335,6 +442,6 @@ test('an unrelated mid-window account is still adopted silently', () => {
     now: NOW,
   });
 
-  assert.equal(state.tracking.start_notified_at, null);
+  assert.equal(state.tracking.five_hour.start_notified_at, null);
   assert.deepEqual(events, []);
 });

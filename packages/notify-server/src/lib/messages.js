@@ -1,12 +1,17 @@
 import { config } from './config.js';
 
-function formatClock(iso) {
+/**
+ * `withDate` matters for the weekly window: a bare "12:00" is useless when the
+ * moment it names is five days away.
+ */
+function formatClock(iso, { withDate = false } = {}) {
   if (!iso) return '—';
 
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '—';
 
-  return new Intl.DateTimeFormat('en-GB', {
+  return new Intl.DateTimeFormat(config.notify.language === 'tr' ? 'tr-TR' : 'en-GB', {
+    ...(withDate ? { day: '2-digit', month: 'short' } : {}),
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
@@ -21,13 +26,25 @@ function formatRemaining(iso, now = Date.now()) {
   if (Number.isNaN(target) || target <= now) return null;
 
   const totalMinutes = Math.round((target - now) / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+
+  // Past a day, hours stop being the unit anyone thinks in.
+  if (days >= 1) {
+    const hours = Math.round((totalMinutes - days * 1440) / 60);
+    return hours
+      ? { en: `${days}d ${hours}h`, tr: `${days} gün ${hours} saat` }
+      : { en: `${days}d`, tr: `${days} gün` };
+  }
+
   const hours = Math.floor(totalMinutes / 60);
   const minutes = totalMinutes % 60;
 
-  if (hours === 0) return { hours: 0, minutes, en: `${minutes}m`, tr: `${minutes} dk` };
-  if (minutes === 0) return { hours, minutes: 0, en: `${hours}h`, tr: `${hours} saat` };
-  return { hours, minutes, en: `${hours}h ${minutes}m`, tr: `${hours} sa ${minutes} dk` };
+  if (hours === 0) return { en: `${minutes}m`, tr: `${minutes} dk` };
+  if (minutes === 0) return { en: `${hours}h`, tr: `${hours} saat` };
+  return { en: `${hours}h ${minutes}m`, tr: `${hours} sa ${minutes} dk` };
 }
+
+const isWeekly = (event) => event.window === 'seven_day';
 
 /** Turn durations, unlike window resets, arrive as a plain count of seconds. */
 function formatDuration(seconds) {
@@ -114,18 +131,26 @@ const PACKS = {
     },
     window_reset(event) {
       const used = typeof event.used_percentage === 'number' ? Math.floor(event.used_percentage) : null;
-      const tail = used === null ? '' : ` You ended the window at ${used}%.`;
+
+      if (isWeekly(event)) {
+        return {
+          title: 'Claude · weekly limit reset',
+          message: `Your 7-day limit is fresh again.${used === null ? '' : ` You ended the week at ${used}%.`}`,
+        };
+      }
+
       return {
         title: 'Claude · limit reset',
-        message: `Your 5-hour window just reset — full quota again.${tail}`,
+        message: `Your 5-hour window just reset — full quota again.${used === null ? '' : ` You ended the window at ${used}%.`}`,
       };
     },
     threshold(event) {
+      const weekly = isWeekly(event);
       const remaining = formatRemaining(event.resets_at);
       const until = remaining ? ` (in ${remaining.en})` : '';
       return {
-        title: `Claude · ${event.threshold}% of the 5-hour window used`,
-        message: `Now at ${Math.floor(event.used_percentage)}%. Resets at ${formatClock(event.resets_at)}${until}.`,
+        title: `Claude · ${event.threshold}% of the ${weekly ? 'weekly' : '5-hour'} limit used`,
+        message: `Now at ${Math.floor(event.used_percentage)}%. Resets at ${formatClock(event.resets_at, { withDate: weekly })}${until}.`,
       };
     },
     source_error(event) {
@@ -192,18 +217,32 @@ const PACKS = {
     },
     window_reset(event) {
       const used = typeof event.used_percentage === 'number' ? Math.floor(event.used_percentage) : null;
-      const tail = used === null ? '' : ` Periyodu %${used} ile kapattın.`;
+
+      if (isWeekly(event)) {
+        return {
+          title: 'Claude · haftalık limit sıfırlandı',
+          message: `7 günlük kotan yeniden tam.${used === null ? '' : ` Haftayı %${used} ile kapattın.`}`,
+        };
+      }
+
       return {
         title: 'Claude · limit sıfırlandı',
-        message: `5 saatlik periyot doldu, kotan yeniden tam.${tail}`,
+        message: `5 saatlik periyot doldu, kotan yeniden tam.${used === null ? '' : ` Periyodu %${used} ile kapattın.`}`,
       };
     },
     threshold(event) {
+      const weekly = isWeekly(event);
       const remaining = formatRemaining(event.resets_at);
       const until = remaining ? ` — ${remaining.tr} sonra` : '';
+
+      // The weekly title puts the number last on purpose: Turkish wants a
+      // different suffix after 50 than after 80 or 95, and a notification is
+      // no place to get that wrong.
       return {
-        title: `Claude · 5 saatlik kotanın %${event.threshold}'i kullanıldı`,
-        message: `Şu an %${Math.floor(event.used_percentage)}. Sıfırlanma: ${formatClock(event.resets_at)}${until}.`,
+        title: weekly
+          ? `Claude · haftalık kullanım %${event.threshold}`
+          : `Claude · 5 saatlik kotanın %${event.threshold}'i kullanıldı`,
+        message: `Şu an %${Math.floor(event.used_percentage)}. Sıfırlanma: ${formatClock(event.resets_at, { withDate: weekly })}${until}.`,
       };
     },
     source_error(event) {
@@ -318,8 +357,11 @@ export function composeNotification(event) {
   const presentation = PRESENTATION[event.type] ?? { priority: 3, tags: [] };
   const { title, message } = build(event);
 
+  // A weekly threshold bites harder than a five-hour one at the same number:
+  // the five-hour window refills over lunch, the week does not.
+  const urgentThreshold = isWeekly(event) ? 80 : 95;
   const priority =
-    event.type === 'threshold' && event.threshold >= 95 ? 4 : presentation.priority;
+    event.type === 'threshold' && event.threshold >= urgentThreshold ? 4 : presentation.priority;
 
   return { title, message, priority, tags: presentation.tags, actions: startActions(event) };
 }

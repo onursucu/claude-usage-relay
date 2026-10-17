@@ -50,7 +50,17 @@ export const config = {
     onWindowStart: bool(process.env.NOTIFY_ON_WINDOW_START, true),
     onWindowReset: bool(process.env.NOTIFY_ON_WINDOW_RESET, true),
     onSourceError: bool(process.env.NOTIFY_ON_SOURCE_ERROR, true),
-    thresholds: list(process.env.USAGE_THRESHOLDS, [80, 95]),
+    /**
+     * Per window, because they fill at completely different speeds. The
+     * five-hour window can go from nothing to spent inside an afternoon, so a
+     * warning is only useful late. The weekly one creeps, and by the time it
+     * reads 80% on a Thursday the week is already decided - hence the earlier
+     * first warning.
+     */
+    thresholds: {
+      five_hour: list(process.env.USAGE_THRESHOLDS, [80, 95]),
+      seven_day: list(process.env.USAGE_THRESHOLDS_SEVEN_DAY, [50, 80, 95]),
+    },
     sourceErrorCooldownMinutes: num(process.env.SOURCE_ERROR_COOLDOWN_MINUTES, 180),
     language: str(process.env.NOTIFY_LANGUAGE, 'en').toLowerCase(),
     onStartOk: bool(process.env.NOTIFY_ON_START_OK, true),
@@ -97,7 +107,16 @@ export const config = {
    * when a window expired, firing the alert hours later is noise, so anything
    * older than this is marked handled without notifying.
    */
-  resetGraceMinutes: num(process.env.RESET_GRACE_MINUTES, 30),
+  resetGraceMinutes: {
+    five_hour: num(process.env.RESET_GRACE_MINUTES, 30),
+
+    /**
+     * A longer leash for the weekly window. Half an hour is the right limit
+     * for "your five hours are back" because the news goes stale fast; being
+     * told a couple of hours late that your week turned over is still useful.
+     */
+    seven_day: num(process.env.RESET_GRACE_MINUTES_SEVEN_DAY, 180),
+  },
 
   /**
    * A brand new account is adopted silently unless its window looks like it

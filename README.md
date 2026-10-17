@@ -33,6 +33,7 @@ clock, not from your machine, so it still reaches you when your laptop is closed
 | **A real widget** | `5h ███░░░░░░░ 32% ↻ 3h 24m │ 7d 18%` right in Claude Code's status line, colour-coded as you get closer to the limit. |
 | **New window opened** | Told the moment a fresh 5-hour window starts, with the exact reset time. |
 | **Approaching the limit** | Configurable thresholds (80% and 95% by default), once each per window. |
+| **The weekly limit too** | The 7-day window gets its own thresholds and its own reset alert. It warns earlier (50% by default), because by the time a weekly limit reads 80% on a Thursday the rest of your week is already decided. |
 | **Limit reset** | The one that matters when you are away from the desk. Fires from the server. |
 | **A long turn finished** | Walk away from a job that takes an hour and hear about it when it ends, with the first lines of the answer. Short turns stay silent. |
 | **A long turn died** | A rate limit or an overloaded API killed the job after forty minutes. You find out now, not at midnight. |
@@ -254,10 +255,12 @@ The ones worth knowing about:
 
 | Server | Default | |
 | --- | --- | --- |
-| `USAGE_THRESHOLDS` | `80,95` | Percentages that trigger a warning. Empty disables them. |
+| `USAGE_THRESHOLDS` | `80,95` | Percentages that trigger a warning on the 5-hour window. Empty disables them. |
+| `USAGE_THRESHOLDS_SEVEN_DAY` | `50,80,95` | The same for the weekly window, warning earlier because it fills far more slowly. |
 | `NOTIFY_ON_WINDOW_RESET` | `true` | The away-from-desk alert. |
 | `NOTIFY_LANGUAGE` | `en` | `en` or `tr`. |
 | `RESET_GRACE_MINUTES` | `30` | If the server was down when a window expired, do not announce it hours late. |
+| `RESET_GRACE_MINUTES_SEVEN_DAY` | `180` | The same for the week, on a longer leash: "your five hours are back" goes stale fast, "your week turned over" does not. |
 
 | Agent | Default | |
 | --- | --- | --- |
@@ -279,7 +282,11 @@ process, which does the talking.
 
 **`resets_at` is the window's identity.** A new value means a new window opened —
 that single comparison is the core of the whole project
-(`packages/notify-server/src/lib/detector.js`).
+(`packages/notify-server/src/lib/detector.js`), and it is per window: the 5-hour
+and 7-day windows are tracked side by side and never overwrite each other.
+
+**Only the 5-hour window announces its start.** A weekly window opening is the
+same news as the previous one resetting, and nobody needs to hear it twice.
 
 **Adopting an account is quiet.** If the server sees an account for the first
 time mid-window, it records the window without announcing it. Otherwise starting

@@ -57,6 +57,16 @@ worth remembering:
 A changed `resets_at` means a new window. This single comparison drives every
 notification (`packages/notify-server/src/lib/detector.js`).
 
+It is applied per window. `tracking` is keyed by window name (`five_hour`,
+`seven_day`) and `WINDOWS` at the top of the detector says what each one
+deserves - only the five-hour one announces its start. Two things to know
+before touching this. State written before the split is flat, and
+`readTracking()` reshapes it on read rather than migrating anything by hand, so
+an upgrade cannot re-announce what the old shape already sent; there is a test
+that pins exactly that. And `evaluateStartRequest` deliberately reads
+`five_hour` specifically - a weekly window is always open and says nothing
+about whether a session can be started.
+
 **3. The server holds the truth, the agent is dumb.** The agent reads, renders
 and forwards; it makes no decisions about notifications. That is what lets the
 reset alert fire with every machine switched off, and what makes several
@@ -138,10 +148,5 @@ keeps its own expiry and fires a duplicate reset alert.
 3. **Optional standalone poller** — for usage data while Claude Code is not
    running. Must be opt-in, clearly marked as unofficial, and must never
    outrank a fresh status line reading.
-4. **Weekly window alerts** — `detector.js` only ever reads `five_hour`, so the
-   `seven_day` window is stored and displayed but never alerted on. Doing it
-   means splitting `tracking` per window, and note the trap: `window-starter`'s
-   `evaluateStartRequest` reads `accountState.tracking.window_id` directly and
-   would silently stop guarding against a start while a window is open.
-5. **A dashboard token** — `GET /state` takes the relay token today, which is a
+4. **A dashboard token** — `GET /state` takes the relay token today, which is a
    write credential. A browser should get a read-only one instead.

@@ -126,7 +126,7 @@ const state = await (await fetch(`http://127.0.0.1:${SERVER_PORT}/state`, {
 const account = state.accounts['claude:default'];
 
 check('server stored the report', Boolean(account));
-check('server tracks the window', account?.tracking?.window_id === new Date(freshReset * 1000).toISOString());
+check('server tracks the window', account?.tracking?.five_hour?.window_id === new Date(freshReset * 1000).toISOString());
 check('server recorded the device', Boolean(account?.devices?.['e2e-desktop']));
 check('new window was announced', pushed.some((item) => item.title?.includes('new 5-hour window')), titles());
 
@@ -162,11 +162,26 @@ for (let attempt = 0; attempt < 45 && !resetPushed; attempt += 1) {
 }
 check('reset pushed by the server clock alone', resetPushed, titles());
 
-// 6. the basics
+// 6. the weekly window, on its own schedule
+pushed.length = 0;
+await runStatusline(
+  {
+    // Mid-window, so the five-hour side is adopted in silence and anything
+    // pushed here can only have come from the weekly window.
+    five_hour: { used_percentage: 5, resets_at: epoch(now + 100 * 60_000) },
+    seven_day: { used_percentage: 57, resets_at: epoch(now + 4 * 86_400_000) },
+  },
+  { ACCOUNT_LABEL: 'weekly', LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent-weekly', 'state.json') },
+);
+await sleep(3000);
+check('a weekly threshold fires on its own schedule', pushed.some((item) => item.title?.includes('weekly limit used')), titles());
+check('a weekly window opening is never announced', pushed.length === 1, titles());
+
+// 7. the basics
 check('unauthorized request rejected', (await fetch(`http://127.0.0.1:${SERVER_PORT}/state`)).status === 401);
 check('health endpoint is open', (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`)).status === 200);
 
-// 7. the turn notifier, driven exactly as Claude Code drives it
+// 8. the turn notifier, driven exactly as Claude Code drives it
 const HOOK = path.join(REPO_ROOT, 'packages/usage-agent/src/hooks/turn-notify.js');
 const HOOK_DATA = path.join(WORK_DIR, 'hooks', 'state.json');
 
@@ -276,7 +291,7 @@ const faked = await fetch(`http://127.0.0.1:${SERVER_PORT}/notify`, {
 });
 check('/notify refuses to fake a detector event', faked.status === 400, `status ${faked.status}`);
 
-// 8. the account the agent reports under
+// 9. the account the agent reports under
 async function stateNow() {
   const response = await fetch(`http://127.0.0.1:${SERVER_PORT}/state`, {
     headers: { authorization: `Bearer ${RELAY_TOKEN}` },
@@ -310,7 +325,7 @@ const signedOut = await runStatusline(
 );
 check('a missing config never breaks the status line', signedOut.code === 0 && signedOut.out.includes('5h'), JSON.stringify(signedOut.out));
 
-// 9. the basics
+// 10. a payload with nothing in it
 const empty = await runStatusline({});
 check('empty payload still renders', empty.code === 0 && empty.out.trim().length > 0, JSON.stringify(empty.out));
 
