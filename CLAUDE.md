@@ -23,8 +23,11 @@ Two rounds of searching GitHub and the web established:
   (`ccgram`, `Claude-Code-Remote`, `claude-notifications-go`) is driven by local
   shell hooks, which fire on task-complete / permission-needed events while
   Claude Code runs — never on "a usage window opened".
-- **There is no hook for rate-limit events.** Confirmed in
+- **There is no hook for rate-limit *window* events.** Confirmed in
   `anthropics/claude-code` issues #34817 and #47276. Do not go looking for one.
+  Note what this does *not* say: `StopFailure` does fire when a turn dies on a
+  rate limit, and the turn notifier uses it. What is missing is any hook for a
+  window opening or resetting, which is why the status line exists.
 - **The status line is the only official source of window data**, and it is
   enough. See `docs/PROTOCOL.md`.
 
@@ -57,6 +60,15 @@ reset alert fire with every machine switched off, and what makes several
 machines reporting the same account trivially consistent — the numbers are
 account-level, so they agree by construction.
 
+The turn notifier is the deliberate exception, and it is worth knowing why.
+Only the machine running Claude Code knows how long a turn took, so that hook
+decides *whether* to notify and posts the result to `POST /notify`. The server
+still composes the message, so the language and timezone settings keep applying.
+That endpoint takes an **allowlist** of event types (`turn_done`,
+`turn_failed`, `test`) rather than anything with a template: window events
+belong to the detector, and a leaked relay token must not be able to fake a
+reset. Add a client-decided event and it goes in that set, consciously.
+
 **4. Adoption is silent.** First time the server sees an account mid-window it
 records the window without announcing it, otherwise starting the server would
 greet you with a stale "new window started". Threshold and reset alerts still
@@ -74,40 +86,47 @@ supply chain behind it. Keep it this way.
   `Date.now()` inside — the clock is always passed in. This is why the tests can
   drive months of scenarios in milliseconds. Keep new logic pure and test it.
 - Anything Claude-Code-shaped is confined to
-  `packages/usage-agent/src/lib/normalize.js`. If Claude Code changes its status
-  line JSON, that is the only file to touch.
-- Never let the status line throw. It prints something no matter what.
+  `packages/usage-agent/src/lib/normalize.js` for the status line, and to
+  `packages/usage-agent/src/hooks/turn-notify.js` for the hook payloads. If
+  Claude Code changes either shape, those are the only files to touch.
+- Never let the status line throw. It prints something no matter what. The same
+  goes for the hook: it swallows everything and exits 0, and it prints nothing
+  at all on stdout, because an async hook's stdout is parsed as a JSON response
+  and fed back to Claude.
+- Hooks are registered with `"async": true`. Claude Code then never waits for
+  them and never enforces their timeout, which is why the hook guards its own
+  stdin read with a timer — a lingering process is the one way it could hurt.
 - Nothing personal in the repo: no domains, hostnames, tokens, or usernames.
   Placeholders only (`your-domain.example`), everything real lives in `.env`.
 
 ## Status
 
-Phase 1 is complete and verified:
+Phase 1 is complete, deployed and verified:
 
 ```bash
 npm test     # 11 detector unit tests
-npm run e2e  # 13 checks, real chain, mock ntfy, offline
+npm run e2e  # 23 checks, real chain, mock ntfy, offline
 ```
 
 The e2e check includes a window reset fired purely from the server's clock with
-the agent silent — the behaviour the whole project exists for.
+the agent silent — the behaviour the whole project exists for — and drives the
+turn notifier through the exact payloads Claude Code sends it.
 
-Not yet done: nothing is deployed. The server has never run anywhere but
-localhost, and the status line has not been installed into `settings.json` on a
-real machine (`node scripts/install-statusline.mjs --apply` does that, with a
-backup and a `--revert`).
+Phase 2, the turn notifier, is written and tested: `src/hooks/turn-notify.js`
+plus `POST /notify`, installed with `node scripts/install-hooks.mjs --apply`.
 
 ## Roadmap
 
-1. **Deploy** — server on an always-on host behind a reverse proxy, agent
-   installed on each machine with a distinct `DEVICE_NAME`.
-2. **Web dashboard** on top of `GET /state`. The endpoint already returns
+1. **Web dashboard** on top of `GET /state`. The endpoint already returns
    everything a dashboard needs.
-3. **Multiple accounts** — the wire format already carries `provider` and
+2. **Multiple accounts** — the wire format already carries `provider` and
    `account`, and the server keys state by `provider:account`. The missing piece
    is agent-side: one install currently reports one account.
-4. **Other CLIs (Codex and friends)** — same protocol, a different collector.
+3. **Other CLIs (Codex and friends)** — same protocol, a different collector.
    Each tool needs its own source of numbers; the server does not care.
-5. **Optional standalone poller** — for usage data while Claude Code is not
+4. **Optional standalone poller** — for usage data while Claude Code is not
    running. Must be opt-in, clearly marked as unofficial, and must never
    outrank a fresh status line reading.
+5. **Notification hook** — Claude Code also fires `Notification` when it has
+   been waiting on you for a permission prompt. A long job that quietly stalls
+   on an approval is exactly the case the turn notifier does not cover yet.

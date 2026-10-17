@@ -12,7 +12,8 @@
     "server": "npm run start --workspace @claude-usage-relay/notify-server",
     "test": "npm test --workspace @claude-usage-relay/notify-server",
     "e2e": "node scripts/e2e.mjs",
-    "install-statusline": "node scripts/install-statusline.mjs"
+    "install-statusline": "node scripts/install-statusline.mjs",
+    "install-hooks": "node scripts/install-hooks.mjs"
   },
   "engines": {
     "node": ">=20"

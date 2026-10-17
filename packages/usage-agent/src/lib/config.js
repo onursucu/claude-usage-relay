@@ -17,6 +17,12 @@ function str(value, fallback = '') {
   return trimmed === '' ? fallback : trimmed;
 }
 
+function bool(value, fallback) {
+  const trimmed = (value ?? '').trim().toLowerCase();
+  if (trimmed === '') return fallback;
+  return ['1', 'true', 'yes', 'on'].includes(trimmed);
+}
+
 export const config = {
   relayUrl: str(process.env.RELAY_URL).replace(/\/+$/, ''),
   relayToken: str(process.env.RELAY_TOKEN),
@@ -34,6 +40,23 @@ export const config = {
    */
   relayMinIntervalSeconds: num(process.env.RELAY_MIN_INTERVAL_SECONDS, 120),
   relayMinDelta: num(process.env.RELAY_MIN_DELTA, 1),
+
+  /**
+   * Settings for the turn notifier (src/hooks/turn-notify.js). It is installed
+   * separately from the status line, and can be switched off here without
+   * touching ~/.claude/settings.json.
+   */
+  turnNotify: {
+    enabled: bool(process.env.NOTIFY_ON_TURN_DONE, true),
+    onFailure: bool(process.env.NOTIFY_ON_TURN_FAILURE, true),
+
+    /**
+     * The Stop hook fires at the end of every turn, and most turns are short.
+     * Only a turn that outlasted this earns a push: the point is to hear about
+     * the long job you walked away from, not about every answer.
+     */
+    minSeconds: num(process.env.NOTIFY_MIN_TURN_SECONDS, 300),
+  },
 
   requestTimeoutMs: num(process.env.RELAY_TIMEOUT_MS, 8000),
   logLevel: str(process.env.LOG_LEVEL, 'info'),

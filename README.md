@@ -1,7 +1,8 @@
 # claude-usage-relay
 
 Get a push notification the moment your Claude 5-hour usage window resets — even
-while every one of your computers is switched off.
+while every one of your computers is switched off — and another when the
+hour-long job you walked away from is finally done.
 
 Claude Code already knows how much of your 5-hour window you have used. It just
 has no way to tell you once you walk away from the keyboard. This project fixes
@@ -33,6 +34,8 @@ clock, not from your machine, so it still reaches you when your laptop is closed
 | **New window opened** | Told the moment a fresh 5-hour window starts, with the exact reset time. |
 | **Approaching the limit** | Configurable thresholds (80% and 95% by default), once each per window. |
 | **Limit reset** | The one that matters when you are away from the desk. Fires from the server. |
+| **A long turn finished** | Walk away from a job that takes an hour and hear about it when it ends, with the first lines of the answer. Short turns stay silent. |
+| **A long turn died** | A rate limit or an overloaded API killed the job after forty minutes. You find out now, not at midnight. |
 | **Several machines** | Every machine reports the same account-level figures, so they simply agree. No syncing between your computers. |
 | **Nothing to leak** | The server never sees a Claude token — see below. |
 
@@ -202,6 +205,39 @@ back. Repeat on every machine, with a different `DEVICE_NAME` and the same
 The agent works without a server too: leave `RELAY_URL` empty and you still get
 the widget, just no notifications.
 
+### 4. Optional: be told when a long turn ends
+
+The usage relay answers *when does my limit come back*. This answers the other
+question you have once you have left the desk: *is that hour-long job done yet*.
+
+```bash
+node scripts/install-hooks.mjs          # shows what it would change
+node scripts/install-hooks.mjs --apply  # writes it (backs up first)
+```
+
+That registers one script on three of Claude Code's hooks:
+
+| | |
+| --- | --- |
+| `UserPromptSubmit` | Stamps when the turn started. |
+| `Stop` | The turn ended. Pushes only if it ran past `NOTIFY_MIN_TURN_SECONDS`, with the opening lines of Claude's answer. |
+| `StopFailure` | The turn died on an API error — a rate limit, an overloaded API. Pushes whatever the duration. |
+
+All three are registered with `"async": true`, so Claude Code starts the hook
+and carries straight on. A slow server, an unreachable one, a hung request —
+none of it can make the editor feel stuck.
+
+Hooks are read when a session starts, so open a new one. Then check it works
+without waiting an hour:
+
+```bash
+NOTIFY_MIN_TURN_SECONDS=0 claude -p "say hi"
+```
+
+The threshold is the setting that matters. `Stop` fires at the end of *every*
+turn and most turns take seconds, so the default 5 minutes is what keeps your
+phone quiet while you work. Lower it and you will regret it.
+
 ## Configuration
 
 Every option lives in the two `.env.example` files, which document themselves.
@@ -218,6 +254,8 @@ The ones worth knowing about:
 | --- | --- | --- |
 | `RELAY_MIN_INTERVAL_SECONDS` | `180` | The status line re-renders constantly; this is how often it may actually report. A new window always reports immediately. |
 | `DEVICE_NAME` | hostname | Shown in notifications. |
+| `NOTIFY_MIN_TURN_SECONDS` | `300` | How long a turn must run to earn a push. |
+| `NOTIFY_ON_TURN_FAILURE` | `true` | Push when a turn dies on an API error, however short. |
 
 ## Design notes
 
@@ -238,6 +276,14 @@ the server would greet you with a "new window started" that is hours old.
 **Everything notification-related is pure.** The detector takes state and a
 report and returns new state plus events, with no I/O and no clock of its own,
 which is why the test suite can drive months of scenarios in milliseconds.
+
+**The turn notifier is the one client that decides for itself.** Everywhere else
+the agent is dumb and the server rules, because the server is the only thing
+still awake when a window expires. A turn is the opposite: only the machine
+running Claude Code knows how long it took, so the hook decides *whether* to
+notify. The server still composes the message, so `NOTIFY_LANGUAGE` and
+`DISPLAY_TIMEZONE` keep applying — and `POST /notify` takes an allowlist of
+event types, so a leaked relay token still cannot fake a window reset.
 
 ## Tests
 

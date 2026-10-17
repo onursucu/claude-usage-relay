@@ -11,6 +11,15 @@ import { dispatch } from './lib/notify.js';
 const MAX_BODY_BYTES = 64 * 1024;
 const RESET_CHECK_INTERVAL_MS = 30_000;
 
+/**
+ * Event types a client may publish directly through POST /notify.
+ *
+ * Deliberately an allowlist rather than "anything with a template": the window
+ * events are the detector's to decide, and a leaked relay token should not be
+ * able to fake a reset. These are the ones only the client can know about.
+ */
+const CLIENT_EVENT_TYPES = new Set(['turn_done', 'turn_failed', 'test']);
+
 const detectorOptions = {
   onWindowStart: config.notify.onWindowStart,
   onWindowReset: config.notify.onWindowReset,
@@ -176,6 +185,35 @@ async function handleRequest(req, res) {
 
     const { status, payload } = handleReport(body);
     json(res, status, payload);
+    return;
+  }
+
+  /**
+   * Notifications the client decides on by itself - today, a Claude Code turn
+   * that ran long enough to be worth a push, or one that died on an API error.
+   * The client decides *whether*; the message is still composed here, so the
+   * language and timezone settings keep applying.
+   */
+  if (req.method === 'POST' && url.pathname === '/notify') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (error) {
+      json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'bad request' });
+      return;
+    }
+
+    if (!body || typeof body !== 'object' || !CLIENT_EVENT_TYPES.has(body.type)) {
+      json(res, 400, { ok: false, error: 'type must be one of: ' + [...CLIENT_EVENT_TYPES].join(', ') });
+      return;
+    }
+
+    log.info('client notification', { type: body.type, device: body.device });
+    dispatchInBackground([body]);
+
+    // Accepted, not delivered: the push happens after this response, so the
+    // hook on the other end never waits for ntfy.
+    json(res, 202, { ok: true, type: body.type });
     return;
   }
 

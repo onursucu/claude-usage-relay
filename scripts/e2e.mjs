@@ -150,6 +150,74 @@ check('reset pushed by the server clock alone', resetPushed, titles());
 check('unauthorized request rejected', (await fetch(`http://127.0.0.1:${SERVER_PORT}/state`)).status === 401);
 check('health endpoint is open', (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`)).status === 200);
 
+// 7. the turn notifier, driven exactly as Claude Code drives it
+const HOOK = path.join(REPO_ROOT, 'packages/usage-agent/src/hooks/turn-notify.js');
+const HOOK_DATA = path.join(WORK_DIR, 'hooks', 'state.json');
+
+function runHook(payload, extraEnv = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [HOOK], {
+      env: {
+        ...process.env,
+        RELAY_URL: `http://127.0.0.1:${SERVER_PORT}`,
+        RELAY_TOKEN,
+        DEVICE_NAME: 'e2e-desktop',
+        LOCAL_STATE_PATH: HOOK_DATA,
+        ...extraEnv,
+      },
+    });
+
+    let out = '';
+    child.stdout.on('data', (data) => { out += data; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, out }));
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+const turn = (event, extra = {}) => ({
+  hook_event_name: event,
+  session_id: 'e2e-session',
+  cwd: '/home/e2e/my-project',
+  ...extra,
+});
+
+pushed.length = 0;
+const stopped = await runHook(turn('Stop', { last_assistant_message: 'done' }));
+await sleep(800);
+check('a turn with no recorded start stays quiet', pushed.length === 0, titles());
+check('the hook prints nothing on stdout', stopped.out === '', JSON.stringify(stopped.out));
+
+await runHook(turn('UserPromptSubmit', { prompt: 'go' }));
+await runHook(turn('Stop', { last_assistant_message: 'done' }));
+await sleep(800);
+check('a short turn is below the threshold', pushed.length === 0, titles());
+
+const longAnswer = 'Refactored the parser.\n\n```js\nsecretcode\n```';
+await runHook(turn('UserPromptSubmit', { prompt: 'go' }));
+await runHook(turn('Stop', { last_assistant_message: longAnswer }), { NOTIFY_MIN_TURN_SECONDS: '0' });
+await sleep(800);
+const done = pushed.find((item) => item.title?.includes('done after'));
+check('a long turn is pushed', Boolean(done), titles());
+check('the push names the device and project', done?.message?.includes('e2e-desktop · my-project') === true, JSON.stringify(done?.message));
+check('the summary keeps the prose', done?.message?.includes('Refactored the parser.') === true, JSON.stringify(done?.message));
+check('the summary drops fenced code', done?.message?.includes('secretcode') === false, JSON.stringify(done?.message));
+
+pushed.length = 0;
+await runHook(turn('UserPromptSubmit', { prompt: 'go' }));
+await runHook(turn('StopFailure', { error: 'rate_limit', error_details: '429 Too Many Requests' }));
+await sleep(800);
+check('a failed turn is pushed whatever its length', pushed.some((item) => item.title?.includes('did not finish')), titles());
+check('the failure says why', pushed.some((item) => item.message?.includes('usage limit')), JSON.stringify(pushed.map((item) => item.message)));
+
+const faked = await fetch(`http://127.0.0.1:${SERVER_PORT}/notify`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', authorization: `Bearer ${RELAY_TOKEN}` },
+  body: JSON.stringify({ type: 'window_reset' }),
+});
+check('/notify refuses to fake a detector event', faked.status === 400, `status ${faked.status}`);
+
+// 8. the basics
 const empty = await runStatusline({});
 check('empty payload still renders', empty.code === 0 && empty.out.trim().length > 0, JSON.stringify(empty.out));
 
