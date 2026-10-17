@@ -80,6 +80,24 @@ function json(res, status, payload) {
   res.end(body);
 }
 
+/**
+ * Which account an alert is about.
+ *
+ * Returns nothing while only one account is tracked: with nothing to confuse
+ * it with, naming it on every notification is pure noise. The moment a second
+ * appears - a personal account next to a work one - every alert needs to say
+ * which limit just came back, or it cannot be acted on.
+ */
+function accountLabelFor(key, state) {
+  if (Object.keys(state.accounts).length < 2) return null;
+
+  const bare = key.replace(/^[^:]*:/, '');
+  return config.accountLabels[key] ?? config.accountLabels[bare] ?? bare;
+}
+
+const withAccount = (events, label) =>
+  (label ? events.map((event) => ({ ...event, account_label: label })) : events);
+
 /** Fire and forget: a slow push must never slow down the reporting agent. */
 function dispatchInBackground(events) {
   if (events.length === 0) return;
@@ -118,7 +136,7 @@ function handleReport(report) {
   if (events.length > 0) {
     log.info('events detected', { account: key, events: events.map((event) => event.type) });
   }
-  dispatchInBackground(events);
+  dispatchInBackground(withAccount(events, accountLabelFor(key, state)));
 
   return { status: 200, payload: { ok: true, events: events.map((event) => event.type) } };
 }
@@ -214,7 +232,7 @@ async function handleStart() {
     ok: ping.ok,
     ...(ping.ok ? { usage: ping.usage } : { error: ping.error }),
   });
-  dispatchInBackground(events);
+  dispatchInBackground(withAccount(events, accountLabelFor(key, state)));
 
   return {
     status: ping.ok ? 200 : 502,
@@ -257,7 +275,7 @@ function runResetCheck() {
       state.accounts[key] = result.state;
       changed = true;
     }
-    events.push(...result.events);
+    events.push(...withAccount(result.events, accountLabelFor(key, state)));
   }
 
   if (changed) saveState(state);
@@ -330,7 +348,9 @@ async function handleRequest(req, res) {
     }
 
     log.info('client notification', { type: body.type, device: body.device });
-    dispatchInBackground([body]);
+
+    const key = accountKey(body.provider, body.account);
+    dispatchInBackground(withAccount([body], accountLabelFor(key, loadState())));
 
     // Accepted, not delivered: the push happens after this response, so the
     // hook on the other end never waits for ntfy.

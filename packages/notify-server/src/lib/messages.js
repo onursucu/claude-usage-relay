@@ -357,11 +357,18 @@ export function composeNotification(event) {
   const presentation = PRESENTATION[event.type] ?? { priority: 3, tags: [] };
   const { title, message } = build(event);
 
+  // Added in one place rather than in twenty templates. It is only ever set
+  // when more than one account is tracked, so a single-account setup reads
+  // exactly as it did before.
+  // A separator rather than brackets: turn_done already ends in a bracketed
+  // duration, and "(1h 5m) (Personal)" reads like a mistake.
+  const titled = event.account_label ? `${title} · ${event.account_label}` : title;
+
   // A weekly threshold bites harder than a five-hour one at the same number:
   // the five-hour window refills over lunch, the week does not.
   const urgentThreshold = isWeekly(event) ? 80 : 95;
   const priority =
     event.type === 'threshold' && event.threshold >= urgentThreshold ? 4 : presentation.priority;
 
-  return { title, message, priority, tags: presentation.tags, actions: startActions(event) };
+  return { title: titled, message, priority, tags: presentation.tags, actions: startActions(event) };
 }

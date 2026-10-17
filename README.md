@@ -39,7 +39,7 @@ clock, not from your machine, so it still reaches you when your laptop is closed
 | **A long turn died** | A rate limit or an overloaded API killed the job after forty minutes. You find out now, not at midnight. |
 | **A long turn is stuck** | The job you walked away from stopped at minute three for a permission prompt. Without this it would simply sit there. |
 | **Several machines** | Every machine reports the same account-level figures, so they simply agree. No syncing between your computers. |
-| **Several accounts** | Switch between a personal and a work account and each keeps its own window, thresholds and reset alert. The agent works out which one is signed in. |
+| **Several accounts** | Switch between a personal and a work account and each keeps its own window, thresholds and reset alert — fired from the server's clock, so you hear that a limit came back on an account you are not currently signed in to. Every alert says which account it is for, once there is more than one. |
 | **Nothing to leak** | The server never sees a Claude token — see below. |
 
 ## How it gets the numbers
@@ -259,6 +259,7 @@ The ones worth knowing about:
 | `USAGE_THRESHOLDS_SEVEN_DAY` | `50,80,95` | The same for the weekly window, warning earlier because it fills far more slowly. |
 | `NOTIFY_ON_WINDOW_RESET` | `true` | The away-from-desk alert. |
 | `NOTIFY_LANGUAGE` | `en` | `en` or `tr`. |
+| `ACCOUNT_LABELS` | — | `key:Name,key:Name`. Human names for your accounts, so an alert says which limit just came back. Ignored while only one account is tracked. |
 | `RESET_GRACE_MINUTES` | `30` | If the server was down when a window expired, do not announce it hours late. |
 | `RESET_GRACE_MINUTES_SEVEN_DAY` | `180` | The same for the week, on a longer leash: "your five hours are back" goes stale fast, "your week turned over" does not. |
 

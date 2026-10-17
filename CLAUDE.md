@@ -67,6 +67,14 @@ that pins exactly that. And `evaluateStartRequest` deliberately reads
 `five_hour` specifically - a weekly window is always open and says nothing
 about whether a session can be started.
 
+**Reset alerts cover every account, not just the one you are using.**
+`runResetCheck` sweeps all of `state.accounts` on the server's clock, so an
+account you have not touched in days still tells you when its limit came back.
+That is also why alerts carry `account_label`: it is attached once at dispatch
+and only when more than one account is tracked, because a bare "limit reset"
+cannot be acted on when you have two. An abandoned account fires exactly one
+reset and then goes quiet - no reports means no new window to expire.
+
 **3. The server holds the truth, the agent is dumb.** The agent reads, renders
 and forwards; it makes no decisions about notifications. That is what lets the
 reset alert fire with every machine switched off, and what makes several

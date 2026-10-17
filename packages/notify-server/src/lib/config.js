@@ -22,6 +22,25 @@ function bool(value, fallback) {
   return ['1', 'true', 'yes', 'on'].includes(trimmed);
 }
 
+/**
+ * "key:Name,key:Name". Split on the LAST colon, because a key may itself be
+ * "claude:33a49bed" - both that and the bare account id are accepted.
+ */
+function map(value) {
+  const out = {};
+
+  for (const entry of (value ?? '').split(',')) {
+    const trimmed = entry.trim();
+    const colon = trimmed.lastIndexOf(':');
+    if (colon < 1) continue;
+
+    const key = trimmed.slice(0, colon).trim();
+    const name = trimmed.slice(colon + 1).trim();
+    if (key && name) out[key] = name;
+  }
+  return out;
+}
+
 function list(value, fallback) {
   const trimmed = (value ?? '').trim();
   if (trimmed === '') return fallback;
@@ -39,6 +58,13 @@ export const config = {
   relayToken: str(process.env.RELAY_TOKEN),
 
   dataDir: str(process.env.DATA_DIR, path.join(PACKAGE_ROOT, 'data')),
+
+  /**
+   * Human names for your accounts, so "limit reset" says which one. Only used
+   * once more than one account is tracked - with a single account the name is
+   * noise on every notification.
+   */
+  accountLabels: map(process.env.ACCOUNT_LABELS),
 
   ntfy: {
     url: str(process.env.NTFY_URL, 'https://ntfy.sh').replace(/\/+$/, ''),

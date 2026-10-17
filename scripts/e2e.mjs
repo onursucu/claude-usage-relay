@@ -176,6 +176,9 @@ await runStatusline(
 await sleep(3000);
 check('a weekly threshold fires on its own schedule', pushed.some((item) => item.title?.includes('weekly limit used')), titles());
 check('a weekly window opening is never announced', pushed.length === 1, titles());
+// By now the server tracks several accounts, so every alert has to say which
+// one it is about - a bare "limit reset" cannot be acted on with two accounts.
+check('an alert names its account once there are several', pushed.every((item) => item.title?.endsWith('· weekly')), titles());
 
 // 7. the basics
 check('unauthorized request rejected', (await fetch(`http://127.0.0.1:${SERVER_PORT}/state`)).status === 401);
