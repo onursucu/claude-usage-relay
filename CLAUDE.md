@@ -159,3 +159,8 @@ keeps its own expiry and fires a duplicate reset alert.
 4. **Serve the dashboard's assets properly** if it ever outgrows one file.
    `GET /` reads a single HTML file and caches it in memory; there is no static
    file server and deliberately so.
+
+Notification buttons live in `actionsFor()` in `messages.js`, capped at three
+because that is ntfy's limit. The "open a window" button is guarded on the
+five-hour window specifically: once the weekly window started producing
+`window_reset` events, an unguarded check would have offered to "start" a week.

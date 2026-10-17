@@ -322,7 +322,12 @@ const PRESENTATION = {
   test: { priority: 3, tags: ['bell'] },
 };
 
+/** The alerts that are about your quota, and so worth a link to the numbers. */
+const QUOTA_EVENTS = new Set(['window_start', 'window_reset', 'threshold', 'source_error']);
+
 /**
+ * Buttons on the notification.
+ *
  * The reset alert is the moment someone can start working again, so it is the
  * natural place to hang the button that opens a window - one tap on the phone
  * instead of unlocking a laptop. A failed start gets the same button so the
@@ -332,12 +337,17 @@ const PRESENTATION = {
  * separate secret from RELAY_TOKEN: anything that reads your ntfy topic learns
  * only how to open a window, never how to write reports.
  */
-function startActions(event) {
-  if (!config.start.actionUrl || !config.start.token) return [];
-  if (event.type !== 'window_reset' && event.type !== 'start_failed') return [];
+function actionsFor(event) {
+  const actions = [];
 
-  return [
-    {
+  // Only the five-hour window is something you can open. The weekly window
+  // produces reset events too now, and offering to "start" one would be
+  // nonsense that also burns a prompt.
+  const startable =
+    (event.type === 'window_reset' && !isWeekly(event)) || event.type === 'start_failed';
+
+  if (startable && config.start.actionUrl && config.start.token) {
+    actions.push({
       action: 'http',
       label: config.notify.language === 'tr' ? 'Periyodu başlat' : 'Open a window',
       url: config.start.actionUrl,
@@ -345,8 +355,22 @@ function startActions(event) {
       headers: { Authorization: `Bearer ${config.start.token}` },
       body: '{}',
       clear: false,
-    },
-  ];
+    });
+  }
+
+  // Deliberately not on the turn notifications: nothing on that page helps
+  // with a job that has just finished, or one stuck waiting at a keyboard you
+  // are not sitting at.
+  if (config.dashboardUrl && QUOTA_EVENTS.has(event.type)) {
+    actions.push({
+      action: 'view',
+      label: config.notify.language === 'tr' ? 'Panel' : 'Dashboard',
+      url: config.dashboardUrl,
+      clear: false,
+    });
+  }
+
+  return actions.slice(0, 3); // ntfy takes no more
 }
 
 export function composeNotification(event) {
@@ -370,5 +394,5 @@ export function composeNotification(event) {
   const priority =
     event.type === 'threshold' && event.threshold >= urgentThreshold ? 4 : presentation.priority;
 
-  return { title: titled, message, priority, tags: presentation.tags, actions: startActions(event) };
+  return { title: titled, message, priority, tags: presentation.tags, actions: actionsFor(event) };
 }

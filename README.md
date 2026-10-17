@@ -271,6 +271,8 @@ The ones worth knowing about:
 | `NOTIFY_ON_WINDOW_RESET` | `true` | The away-from-desk alert. |
 | `NOTIFY_LANGUAGE` | `en` | `en` or `tr`. |
 | `ACCOUNT_LABELS` | — | `key:Name,key:Name`. Human names for your accounts, so an alert says which limit just came back. Ignored while only one account is tracked. |
+| `DASHBOARD_URL` | — | Public URL of the dashboard, for a link on the quota notifications. Empty omits it. |
+| `DASHBOARD_TOKEN` | — | Read-only token for that page. Empty turns the page off. |
 | `RESET_GRACE_MINUTES` | `30` | If the server was down when a window expired, do not announce it hours late. |
 | `RESET_GRACE_MINUTES_SEVEN_DAY` | `180` | The same for the week, on a longer leash: "your five hours are back" goes stale fast, "your week turned over" does not. |
 

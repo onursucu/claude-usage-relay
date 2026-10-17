@@ -65,6 +65,9 @@ const server = spawn(process.execPath, [path.join(REPO_ROOT, 'packages/notify-se
     NTFY_URL: `http://127.0.0.1:${NTFY_PORT}`,
     NTFY_TOPIC: 'e2e',
     NOTIFY_LANGUAGE: 'en',
+    DASHBOARD_URL: 'https://dashboard.invalid/',
+    START_ACTION_URL: 'https://dashboard.invalid/start',
+    START_TOKEN: 'e2e-start-token',
     LOG_LEVEL: 'warn',
   },
 });
@@ -163,6 +166,13 @@ for (let attempt = 0; attempt < 45 && !resetPushed; attempt += 1) {
   resetPushed = pushed.some((item) => item.title?.includes('limit reset'));
 }
 check('reset pushed by the server clock alone', resetPushed, titles());
+
+const resetPush = pushed.find((item) => item.title?.includes('limit reset'));
+check(
+  'the reset carries both buttons onto the wire',
+  JSON.stringify((resetPush?.actions ?? []).map((action) => action.action)) === '["http","view"]',
+  JSON.stringify(resetPush?.actions),
+);
 
 // 6. the weekly window, on its own schedule
 pushed.length = 0;

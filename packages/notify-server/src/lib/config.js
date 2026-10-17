@@ -73,6 +73,9 @@ export const config = {
    */
   dashboardToken: str(process.env.DASHBOARD_TOKEN),
 
+  /** Public URL of the dashboard, for the link on quota notifications. */
+  dashboardUrl: str(process.env.DASHBOARD_URL),
+
   ntfy: {
     url: str(process.env.NTFY_URL, 'https://ntfy.sh').replace(/\/+$/, ''),
     topic: str(process.env.NTFY_TOPIC),
