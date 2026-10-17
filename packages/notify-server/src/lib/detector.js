@@ -17,6 +17,7 @@ function emptyAccount(report) {
     windows: {},
     devices: {},
     tracking: null,
+    pending_start: null,
     source_error: null,
   };
 }
@@ -85,11 +86,18 @@ export function ingestReport({ accountState, report, options, now = Date.now() }
     const resetsAtMs = new Date(fiveHour.resets_at).getTime();
     const minutesLeft = minutesBetween(resetsAtMs, now);
 
+    // A window we opened ourselves arrives here for the first time with a real
+    // `resets_at`. That is the moment the pending start becomes a fact, and
+    // also proof that the window is genuinely new - so announce it even though
+    // we may never have seen this account before.
+    const confirmsPendingStart = Boolean(state.pending_start);
+    if (confirmsPendingStart) state.pending_start = null;
+
     // With no previous window we cannot tell whether this one just opened or
     // has been running for hours, so only announce it if it still has almost
     // its full length ahead of it.
     const looksJustOpened = minutesLeft > FIVE_HOUR_WINDOW_MINUTES - options.freshWindowMinutes;
-    const announce = options.onWindowStart && (previous ? true : looksJustOpened);
+    const announce = options.onWindowStart && (previous || confirmsPendingStart ? true : looksJustOpened);
 
     state.tracking = {
       window_id: fiveHour.resets_at,
@@ -166,4 +174,72 @@ export function checkWindowReset({ accountState, options, now = Date.now() }) {
       : [];
 
   return { state, events };
+}
+
+/**
+ * Decides whether a start request should actually reach the CLI.
+ *
+ * Two things make a ping pointless, and both are worth catching here rather
+ * than burning quota to discover them:
+ *
+ * - a window is already open, so nothing would be started;
+ * - we pinged moments ago and no report has confirmed it yet. Until a status
+ *   line tells us the new `resets_at`, the server genuinely cannot tell the
+ *   difference between "our ping worked" and "nothing happened", so a second
+ *   tap on the notification would otherwise fire a second, wasted ping.
+ */
+export function evaluateStartRequest({ accountState, options, now = Date.now() }) {
+  const windowId = accountState?.tracking?.window_id;
+
+  if (windowId) {
+    const resetsAtMs = new Date(windowId).getTime();
+    if (Number.isFinite(resetsAtMs) && now < resetsAtMs) {
+      return { allowed: false, reason: 'window_active', resets_at: windowId };
+    }
+  }
+
+  const requestedAt = accountState?.pending_start?.requested_at;
+  if (requestedAt) {
+    const ageMinutes = minutesBetween(now, new Date(requestedAt).getTime());
+    if (Number.isFinite(ageMinutes) && ageMinutes >= 0 && ageMinutes < options.pendingStartTtlMinutes) {
+      return { allowed: false, reason: 'start_pending', requested_at: requestedAt };
+    }
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Records the outcome of a ping.
+ *
+ * On success the window is deliberately left in a "pending" state rather than
+ * guessed at: `resets_at` lands on a rounded boundary that `now + 5h` does not
+ * reproduce, and since that timestamp is the window's identity, a guess would
+ * later be contradicted by the first real report and announced as a second,
+ * phantom window. So we record only what we know - that a window was opened -
+ * and let the next status line fill in when it ends.
+ */
+export function recordStartResult({ accountState, report, ok, error, options, now = Date.now() }) {
+  const state = accountState ? structuredClone(accountState) : emptyAccount(report ?? {});
+  const nowIso = new Date(now).toISOString();
+
+  if (!ok) {
+    // A failed ping leaves nothing pending: the next request should try again
+    // rather than wait out a TTL for something that never happened.
+    state.pending_start = null;
+    state.updated_at = nowIso;
+
+    return {
+      state,
+      events: options.onStartFailed ? [{ type: 'start_failed', message: String(error ?? 'unknown error') }] : [],
+    };
+  }
+
+  state.pending_start = { requested_at: nowIso, source: 'starter' };
+  state.updated_at = nowIso;
+
+  return {
+    state,
+    events: options.onStartOk ? [{ type: 'start_ok', requested_at: nowIso }] : [],
+  };
 }

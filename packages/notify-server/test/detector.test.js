@@ -1,7 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ingestReport, checkWindowReset } from '../src/lib/detector.js';
+import {
+  ingestReport,
+  checkWindowReset,
+  evaluateStartRequest,
+  recordStartResult,
+} from '../src/lib/detector.js';
 
 const OPTIONS = {
   onWindowStart: true,
@@ -11,6 +16,9 @@ const OPTIONS = {
   sourceErrorCooldownMinutes: 180,
   resetGraceMinutes: 30,
   freshWindowMinutes: 10,
+  onStartOk: true,
+  onStartFailed: true,
+  pendingStartTtlMinutes: 300,
 };
 
 const NOW = Date.parse('2026-09-04T12:00:00.000Z');
@@ -196,4 +204,137 @@ test('devices are tracked separately while the account state stays shared', () =
 
   assert.deepEqual(Object.keys(second.state.devices).sort(), ['desktop', 'laptop']);
   assert.deepEqual(second.events, []); // same window seen from another machine
+});
+
+// --- opening a window on request -------------------------------------------
+
+const trackingFor = (resetsAtMs) => ({
+  window_id: new Date(resetsAtMs).toISOString(),
+  first_seen_at: new Date(NOW).toISOString(),
+  start_notified_at: new Date(NOW).toISOString(),
+  reset_notified_at: null,
+  thresholds_notified: [],
+});
+
+test('a start is refused while a window is still open', () => {
+  const accountState = { tracking: trackingFor(NOW + minutes(120)) };
+  const decision = evaluateStartRequest({ accountState, options: OPTIONS, now: NOW });
+
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.reason, 'window_active');
+  assert.equal(decision.resets_at, accountState.tracking.window_id);
+});
+
+test('a start is allowed once the window has expired', () => {
+  const accountState = { tracking: trackingFor(NOW - minutes(1)) };
+  const decision = evaluateStartRequest({ accountState, options: OPTIONS, now: NOW });
+
+  assert.equal(decision.allowed, true);
+});
+
+test('a second start is refused while the first is still unconfirmed', () => {
+  const accountState = {
+    tracking: trackingFor(NOW - minutes(60)),
+    pending_start: { requested_at: new Date(NOW - minutes(5)).toISOString() },
+  };
+
+  const decision = evaluateStartRequest({ accountState, options: OPTIONS, now: NOW });
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.reason, 'start_pending');
+});
+
+test('a start that was never confirmed stops blocking once it ages out', () => {
+  const accountState = {
+    tracking: trackingFor(NOW - minutes(60)),
+    pending_start: { requested_at: new Date(NOW - minutes(301)).toISOString() },
+  };
+
+  const decision = evaluateStartRequest({ accountState, options: OPTIONS, now: NOW });
+  assert.equal(decision.allowed, true);
+});
+
+// Regression: a scheduled start at 08:30 was not confirmed until 09:06,
+// because nobody ran Claude Code in between and the server has no other way to
+// see the window. A short TTL expired in that gap and fired a second, useless
+// ping at 08:50. A successful ping means a window is open - the only thing
+// that should unblock another one is that window ending.
+test('an unconfirmed start keeps blocking for as long as the window it opened', () => {
+  const started = recordStartResult({ accountState: null, ok: true, options: OPTIONS, now: NOW });
+
+  for (const elapsed of [10, 20, 36, 120, 290]) {
+    const decision = evaluateStartRequest({
+      accountState: started.state,
+      options: OPTIONS,
+      now: NOW + minutes(elapsed),
+    });
+    assert.equal(decision.allowed, false, `a start ${elapsed} minutes in must still be refused`);
+    assert.equal(decision.reason, 'start_pending');
+  }
+});
+
+test('a successful start is recorded as pending, not as a guessed window', () => {
+  const { state, events } = recordStartResult({
+    accountState: null,
+    ok: true,
+    options: OPTIONS,
+    now: NOW,
+  });
+
+  assert.equal(state.pending_start.requested_at, new Date(NOW).toISOString());
+  assert.equal(state.tracking, null, 'resets_at must come from a real report, never from a guess');
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['start_ok'],
+  );
+});
+
+test('a failed start notifies and leaves nothing pending, so it can be retried', () => {
+  const accountState = { pending_start: { requested_at: new Date(NOW - minutes(1)).toISOString() } };
+  const { state, events } = recordStartResult({
+    accountState,
+    ok: false,
+    error: 'invalid credential',
+    options: OPTIONS,
+    now: NOW,
+  });
+
+  assert.equal(state.pending_start, null);
+  assert.equal(events[0].type, 'start_failed');
+  assert.match(events[0].message, /invalid credential/);
+
+  const decision = evaluateStartRequest({ accountState: state, options: OPTIONS, now: NOW });
+  assert.equal(decision.allowed, true);
+});
+
+test('the first report after a start confirms it and announces the real window', () => {
+  const started = recordStartResult({ accountState: null, ok: true, options: OPTIONS, now: NOW });
+
+  // Arrives ten minutes later, and the window ends on a rounded boundary that
+  // `now + 5h` would never have produced - which is why nothing was guessed.
+  const later = NOW + minutes(10);
+  const { state, events } = ingestReport({
+    accountState: started.state,
+    report: report({ five_hour: { resets_at: new Date(NOW + minutes(290)).toISOString() } }),
+    options: OPTIONS,
+    now: later,
+  });
+
+  assert.equal(state.pending_start, null, 'the pending start is settled by the real report');
+  assert.equal(state.tracking.window_id, new Date(NOW + minutes(290)).toISOString());
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['window_start'],
+  );
+});
+
+test('an unrelated mid-window account is still adopted silently', () => {
+  const { state, events } = ingestReport({
+    accountState: null,
+    report: report({ five_hour: { resets_at: new Date(NOW + minutes(120)).toISOString() } }),
+    options: OPTIONS,
+    now: NOW,
+  });
+
+  assert.equal(state.tracking.start_notified_at, null);
+  assert.deepEqual(events, []);
 });

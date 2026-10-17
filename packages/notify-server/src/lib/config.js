@@ -53,6 +53,40 @@ export const config = {
     thresholds: list(process.env.USAGE_THRESHOLDS, [80, 95]),
     sourceErrorCooldownMinutes: num(process.env.SOURCE_ERROR_COOLDOWN_MINUTES, 180),
     language: str(process.env.NOTIFY_LANGUAGE, 'en').toLowerCase(),
+    onStartOk: bool(process.env.NOTIFY_ON_START_OK, true),
+    onStartFailed: bool(process.env.NOTIFY_ON_START_FAILED, true),
+  },
+
+  /**
+   * Opening a window on request. The credential that can actually do it lives
+   * in the window-starter service, not here - this server only knows a
+   * loopback URL and a token for it, so compromising the public-facing
+   * process does not hand anyone a Claude credential.
+   */
+  start: {
+    token: str(process.env.START_TOKEN),
+    starterUrl: str(process.env.STARTER_URL, 'http://127.0.0.1:8788').replace(/\/+$/, ''),
+    starterToken: str(process.env.STARTER_TOKEN),
+    starterTimeoutMs: num(process.env.STARTER_TIMEOUT_SECONDS, 150) * 1000,
+
+    /** Public URL the phone's notification button posts to. */
+    actionUrl: str(process.env.START_ACTION_URL),
+
+    /**
+     * How long a successful ping keeps blocking further starts while we wait
+     * for a status line to confirm the new window.
+     *
+     * This is the window's own length, not a short retry delay. A ping that
+     * succeeded opened a window, and nothing can be gained by opening one
+     * again before it expires - but the server stays blind until someone
+     * actually runs Claude Code, and that gap is routinely longer than a few
+     * minutes. At 15 minutes a scheduled 08:30 start that was not confirmed
+     * until 09:06 fired a second, useless ping at 08:50.
+     *
+     * Retrying a *failed* ping does not depend on this: a failure clears
+     * pending_start immediately, so the next request tries again.
+     */
+    pendingTtlMinutes: num(process.env.PENDING_START_TTL_MINUTES, 300),
   },
 
   displayTimeZone: str(process.env.DISPLAY_TIMEZONE) || undefined,
@@ -74,3 +108,6 @@ export const config = {
 };
 
 export const notificationsConfigured = Boolean(config.ntfy.topic);
+
+/** /start stays switched off until both halves of the link are configured. */
+export const startConfigured = Boolean(config.start.token && config.start.starterToken);

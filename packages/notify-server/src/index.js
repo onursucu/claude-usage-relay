@@ -2,14 +2,23 @@
 import http from 'node:http';
 import crypto from 'node:crypto';
 
-import { config, notificationsConfigured } from './lib/config.js';
+import { config, notificationsConfigured, startConfigured } from './lib/config.js';
 import { log } from './lib/log.js';
 import { loadState, saveState, accountKey } from './lib/store.js';
-import { ingestReport, checkWindowReset } from './lib/detector.js';
+import { ingestReport, checkWindowReset, evaluateStartRequest, recordStartResult } from './lib/detector.js';
 import { dispatch } from './lib/notify.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const RESET_CHECK_INTERVAL_MS = 30_000;
+
+/**
+ * Event types a client may publish directly through POST /notify.
+ *
+ * Deliberately an allowlist rather than "anything with a template": the window
+ * events are the detector's to decide, and a leaked relay token should not be
+ * able to fake a reset. These are the ones only the client can know about.
+ */
+const CLIENT_EVENT_TYPES = new Set(['turn_done', 'turn_failed', 'test']);
 
 const detectorOptions = {
   onWindowStart: config.notify.onWindowStart,
@@ -19,14 +28,19 @@ const detectorOptions = {
   sourceErrorCooldownMinutes: config.notify.sourceErrorCooldownMinutes,
   resetGraceMinutes: config.resetGraceMinutes,
   freshWindowMinutes: config.freshWindowMinutes,
+  onStartOk: config.notify.onStartOk,
+  onStartFailed: config.notify.onStartFailed,
+  pendingStartTtlMinutes: config.start.pendingTtlMinutes,
 };
 
-function isAuthorized(req) {
+function isAuthorized(req, expected) {
+  if (!expected) return false;
+
   const header = req.headers.authorization ?? '';
   const provided = header.startsWith('Bearer ') ? header.slice(7) : '';
 
   const a = Buffer.from(provided);
-  const b = Buffer.from(config.relayToken);
+  const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
@@ -109,6 +123,105 @@ function handleReport(report) {
   return { status: 200, payload: { ok: true, events: events.map((event) => event.type) } };
 }
 
+/**
+ * Asks the window-starter service to send one prompt. This server never holds
+ * a Claude credential itself - it only knows a loopback address and a token,
+ * so a compromise here cannot be turned into access to the account.
+ */
+async function callStarter() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), config.start.starterTimeoutMs);
+
+  try {
+    const response = await fetch(`${config.start.starterUrl}/ping`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${config.start.starterToken}` },
+      signal: controller.signal,
+    });
+
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || !payload.ok) {
+      return { ok: false, error: String(payload.error ?? `starter returned HTTP ${response.status}`) };
+    }
+    return { ok: true, usage: payload.usage };
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    return { ok: false, error: reason === 'This operation was aborted' ? 'starter timed out' : reason };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
+ * Which account a start request applies to. One install reports one account
+ * today, so the single tracked account is the unambiguous answer; the explicit
+ * fallback keeps the behaviour defined for a state file that is still empty.
+ */
+function startAccountKey(state) {
+  const keys = Object.keys(state.accounts);
+  return keys.length === 1 ? keys[0] : accountKey('claude', 'default');
+}
+
+async function handleStart() {
+  // The scheduled start fires the moment a window expires, which can beat the
+  // periodic reset check to it - and then the phone is told the new window
+  // opened before it is told the old one closed. Settling any due reset first
+  // keeps the two in the order they actually happened.
+  runResetCheck();
+
+  const state = loadState();
+  const key = startAccountKey(state);
+  const existing = state.accounts[key];
+
+  const decision = evaluateStartRequest({
+    accountState: existing,
+    options: detectorOptions,
+    now: Date.now(),
+  });
+
+  // Nothing to do is a success, not an error: the caller asked for a window to
+  // be open and one is. This is what makes the cron and the phone button safe
+  // to press in any order, or twice.
+  if (!decision.allowed) {
+    log.info('start request declined', { account: key, reason: decision.reason });
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        started: false,
+        reason: decision.reason,
+        ...(decision.resets_at ? { resets_at: decision.resets_at } : {}),
+        ...(decision.requested_at ? { requested_at: decision.requested_at } : {}),
+      },
+    };
+  }
+
+  const ping = await callStarter();
+  const { state: nextAccount, events } = recordStartResult({
+    accountState: existing,
+    report: { provider: 'claude', account: 'default' },
+    ok: ping.ok,
+    error: ping.error,
+    options: detectorOptions,
+    now: Date.now(),
+  });
+
+  state.accounts[key] = nextAccount;
+  saveState(state);
+
+  log[ping.ok ? 'info' : 'error']('start request finished', {
+    account: key,
+    ok: ping.ok,
+    ...(ping.ok ? { usage: ping.usage } : { error: ping.error }),
+  });
+  dispatchInBackground(events);
+
+  return {
+    status: ping.ok ? 200 : 502,
+    payload: ping.ok ? { ok: true, started: true, usage: ping.usage } : { ok: false, error: ping.error },
+  };
+}
+
 function buildStateResponse() {
   const state = loadState();
 
@@ -160,7 +273,24 @@ async function handleRequest(req, res) {
     return;
   }
 
-  if (!isAuthorized(req)) {
+  if (req.method === 'POST' && url.pathname === '/start') {
+    req.resume(); // the notification button posts a body we have no use for
+
+    if (!startConfigured) {
+      json(res, 503, { ok: false, error: 'start is not configured' });
+      return;
+    }
+    if (!isAuthorized(req, config.start.token)) {
+      json(res, 401, { ok: false, error: 'unauthorized' });
+      return;
+    }
+
+    const { status, payload } = await handleStart();
+    json(res, status, payload);
+    return;
+  }
+
+  if (!isAuthorized(req, config.relayToken)) {
     json(res, 401, { ok: false, error: 'unauthorized' });
     return;
   }
@@ -176,6 +306,35 @@ async function handleRequest(req, res) {
 
     const { status, payload } = handleReport(body);
     json(res, status, payload);
+    return;
+  }
+
+  /**
+   * Notifications the client decides on by itself - today, a Claude Code turn
+   * that ran long enough to be worth a push, or one that died on an API error.
+   * The client decides *whether*; the message is still composed here, so the
+   * language and timezone settings keep applying.
+   */
+  if (req.method === 'POST' && url.pathname === '/notify') {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (error) {
+      json(res, 400, { ok: false, error: error instanceof Error ? error.message : 'bad request' });
+      return;
+    }
+
+    if (!body || typeof body !== 'object' || !CLIENT_EVENT_TYPES.has(body.type)) {
+      json(res, 400, { ok: false, error: 'type must be one of: ' + [...CLIENT_EVENT_TYPES].join(', ') });
+      return;
+    }
+
+    log.info('client notification', { type: body.type, device: body.device });
+    dispatchInBackground([body]);
+
+    // Accepted, not delivered: the push happens after this response, so the
+    // hook on the other end never waits for ntfy.
+    json(res, 202, { ok: true, type: body.type });
     return;
   }
 
@@ -217,6 +376,7 @@ async function main() {
       port: config.port,
       thresholds: config.notify.thresholds,
       language: config.notify.language,
+      start: startConfigured ? 'enabled' : 'disabled',
     });
   });
 

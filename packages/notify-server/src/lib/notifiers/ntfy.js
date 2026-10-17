@@ -7,7 +7,7 @@ const REQUEST_TIMEOUT_MS = 10_000;
  * and messages here contain non-ASCII text, which does not survive HTTP
  * headers reliably.
  */
-export async function sendNtfy({ title, message, priority = 3, tags = [] }) {
+export async function sendNtfy({ title, message, priority = 3, tags = [], actions = [] }) {
   if (!config.ntfy.topic) {
     return { sent: false, reason: 'ntfy topic not configured' };
   }
@@ -28,6 +28,7 @@ export async function sendNtfy({ title, message, priority = 3, tags = [] }) {
         message,
         priority,
         tags,
+        ...(actions.length > 0 ? { actions } : {}),
       }),
       signal: controller.signal,
     });
