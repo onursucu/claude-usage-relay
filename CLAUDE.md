@@ -44,6 +44,9 @@ So this project reads only the documented `statusLine` stdin JSON. Consequences
 worth remembering:
 
 - No credentials are read, so there is nothing to leak and nothing to refresh.
+  `src/lib/account.js` is the one file that opens anything else, and what it
+  opens is `~/.claude.json` — Claude Code's config, not its credentials — for
+  an opaque `accountUuid`. Keep `.credentials.json` out of this project.
 - Data only arrives while Claude Code is running — which is fine, because a
   window can only *start* while you are using Claude, and the *reset* is derived
   from `resets_at` by the server.
@@ -115,16 +118,20 @@ turn notifier through the exact payloads Claude Code sends it.
 Phase 2, the turn notifier, is written and tested: `src/hooks/turn-notify.js`
 plus `POST /notify`, installed with `node scripts/install-hooks.mjs --apply`.
 
+Multiple accounts work as of `src/lib/account.js`: the agent detects the
+signed-in account rather than reporting a fixed label, so switching accounts no
+longer overwrites the previous one's window. Upgrading an existing install means
+clearing `ACCOUNT_LABEL=default` from `.env` **and** renaming that account's key
+in the server's `data/state.json` — otherwise the stale `claude:default` entry
+keeps its own expiry and fires a duplicate reset alert.
+
 ## Roadmap
 
 1. **Web dashboard** on top of `GET /state`. The endpoint already returns
    everything a dashboard needs.
-2. **Multiple accounts** — the wire format already carries `provider` and
-   `account`, and the server keys state by `provider:account`. The missing piece
-   is agent-side: one install currently reports one account.
-3. **Other CLIs (Codex and friends)** — same protocol, a different collector.
+2. **Other CLIs (Codex and friends)** — same protocol, a different collector.
    Each tool needs its own source of numbers; the server does not care.
-4. **Optional standalone poller** — for usage data while Claude Code is not
+3. **Optional standalone poller** — for usage data while Claude Code is not
    running. Must be opt-in, clearly marked as unofficial, and must never
    outrank a fresh status line reading.
 5. **Notification hook** — Claude Code also fires `Notification` when it has

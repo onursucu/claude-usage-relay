@@ -15,6 +15,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 const WORK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-usage-relay-e2e-'));
 
+/**
+ * Account detection reads whoever is signed in on this machine, which would
+ * make the run depend on the developer's own account. Pointing it at a file
+ * that does not exist pins every check below to the 'default' fallback; the
+ * account checks opt back in explicitly.
+ */
+const NO_ACCOUNT = path.join(WORK_DIR, 'no-account.json');
+
 const RELAY_TOKEN = 'e2e-token-0000000000';
 const NTFY_PORT = 8899;
 const SERVER_PORT = 8788;
@@ -73,6 +81,7 @@ function runStatusline(rateLimits, extraEnv = {}) {
         DEVICE_NAME: 'e2e-desktop',
         LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent', 'state.json'),
         RELAY_MIN_INTERVAL_SECONDS: '0',
+        CLAUDE_ACCOUNT_FILE: NO_ACCOUNT,
         ...extraEnv,
       },
     });
@@ -163,6 +172,7 @@ function runHook(payload, extraEnv = {}) {
         RELAY_TOKEN,
         DEVICE_NAME: 'e2e-desktop',
         LOCAL_STATE_PATH: HOOK_DATA,
+        CLAUDE_ACCOUNT_FILE: NO_ACCOUNT,
         ...extraEnv,
       },
     });
@@ -217,7 +227,41 @@ const faked = await fetch(`http://127.0.0.1:${SERVER_PORT}/notify`, {
 });
 check('/notify refuses to fake a detector event', faked.status === 400, `status ${faked.status}`);
 
-// 8. the basics
+// 8. the account the agent reports under
+async function stateNow() {
+  const response = await fetch(`http://127.0.0.1:${SERVER_PORT}/state`, {
+    headers: { authorization: `Bearer ${RELAY_TOKEN}` },
+  });
+  return (await response.json()).accounts;
+}
+
+const accountFile = path.join(WORK_DIR, 'claude.json');
+fs.writeFileSync(accountFile, JSON.stringify({ oauthAccount: { accountUuid: 'ABC12345-dead-beef-0000-111122223333' } }));
+
+const detected = await runStatusline(
+  { five_hour: { used_percentage: 2, resets_at: epoch(now + 280 * 60_000) }, seven_day: sevenDay },
+  { ACCOUNT_LABEL: '', CLAUDE_ACCOUNT_FILE: accountFile, LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent3', 'state.json') },
+);
+await sleep(3000);
+let accounts = await stateNow();
+check('the signed-in account becomes the key', Boolean(accounts['claude:abc12345']), Object.keys(accounts).join(', '));
+check('the status line still renders while detecting', detected.code === 0 && detected.out.includes('5h'), JSON.stringify(detected.out));
+
+await runStatusline(
+  { five_hour: { used_percentage: 5, resets_at: epoch(now + 275 * 60_000) }, seven_day: sevenDay },
+  { ACCOUNT_LABEL: 'by-hand', CLAUDE_ACCOUNT_FILE: accountFile, LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent4', 'state.json') },
+);
+await sleep(3000);
+accounts = await stateNow();
+check('an explicit ACCOUNT_LABEL still wins', Boolean(accounts['claude:by-hand']), Object.keys(accounts).join(', '));
+
+const signedOut = await runStatusline(
+  { five_hour: { used_percentage: 7, resets_at: epoch(now + 270 * 60_000) }, seven_day: sevenDay },
+  { ACCOUNT_LABEL: '', CLAUDE_ACCOUNT_FILE: path.join(WORK_DIR, 'nothing-here.json'), LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent5', 'state.json') },
+);
+check('a missing config never breaks the status line', signedOut.code === 0 && signedOut.out.includes('5h'), JSON.stringify(signedOut.out));
+
+// 9. the basics
 const empty = await runStatusline({});
 check('empty payload still renders', empty.code === 0 && empty.out.trim().length > 0, JSON.stringify(empty.out));
 

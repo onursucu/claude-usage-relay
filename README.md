@@ -37,6 +37,7 @@ clock, not from your machine, so it still reaches you when your laptop is closed
 | **A long turn finished** | Walk away from a job that takes an hour and hear about it when it ends, with the first lines of the answer. Short turns stay silent. |
 | **A long turn died** | A rate limit or an overloaded API killed the job after forty minutes. You find out now, not at midnight. |
 | **Several machines** | Every machine reports the same account-level figures, so they simply agree. No syncing between your computers. |
+| **Several accounts** | Switch between a personal and a work account and each keeps its own window, thresholds and reset alert. The agent works out which one is signed in. |
 | **Nothing to leak** | The server never sees a Claude token — see below. |
 
 ## How it gets the numbers
@@ -180,6 +181,10 @@ RELAY_TOKEN=<the same token as the server>
 DEVICE_NAME=desktop
 ```
 
+Leave `ACCOUNT_LABEL` empty. The agent then works out which Claude account is
+signed in, so each account gets its own window tracked on the server instead of
+overwriting the last one's. Set it only to give an account a name you prefer.
+
 Then point Claude Code's status line at the agent:
 
 ```bash
@@ -254,6 +259,7 @@ The ones worth knowing about:
 | --- | --- | --- |
 | `RELAY_MIN_INTERVAL_SECONDS` | `180` | The status line re-renders constantly; this is how often it may actually report. A new window always reports immediately. |
 | `DEVICE_NAME` | hostname | Shown in notifications. |
+| `ACCOUNT_LABEL` | the signed-in account | Which account the numbers belong to. Leave empty to detect it; set it to name an account yourself. |
 | `NOTIFY_MIN_TURN_SECONDS` | `300` | How long a turn must run to earn a push. |
 | `NOTIFY_ON_TURN_FAILURE` | `true` | Push when a turn dies on an API error, however short. |
 
@@ -276,6 +282,15 @@ the server would greet you with a "new window started" that is hours old.
 **Everything notification-related is pure.** The detector takes state and a
 report and returns new state plus events, with no I/O and no clock of its own,
 which is why the test suite can drive months of scenarios in milliseconds.
+
+**The account is detected, not configured.** The status line payload carries the
+window numbers but no identity at all, so a fixed label would file every account
+under one key — and the first time you switched accounts you would stop being
+told when the previous one's limit came back. So the agent reads `accountUuid`
+from `~/.claude.json`, Claude Code's own config. That is not the credentials
+file: `~/.claude/.credentials.json` is still never opened, the identifier is
+opaque rather than secret, and the read costs about half a millisecond against a
+node startup of thirty.
 
 **The turn notifier is the one client that decides for itself.** Everywhere else
 the agent is dumb and the server rules, because the server is the only thing

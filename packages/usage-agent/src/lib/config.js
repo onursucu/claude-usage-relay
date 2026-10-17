@@ -2,6 +2,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from './env.js';
+import { detectAccount } from './account.js';
 
 export const PACKAGE_ROOT = path.resolve(fileURLToPath(import.meta.url), '../../..');
 
@@ -28,7 +29,13 @@ export const config = {
   relayToken: str(process.env.RELAY_TOKEN),
 
   device: str(process.env.DEVICE_NAME, os.hostname()),
-  account: str(process.env.ACCOUNT_LABEL, 'default'),
+  /**
+   * Which account the numbers belong to. The server keys its state by this, so
+   * it is what keeps two accounts' windows from overwriting each other when
+   * you switch. Detected from the signed-in account; ACCOUNT_LABEL overrides
+   * it when you would rather give an account a name of your own.
+   */
+  account: str(process.env.ACCOUNT_LABEL) || detectAccount() || 'default',
 
   statePath: str(process.env.LOCAL_STATE_PATH, path.join(PACKAGE_ROOT, 'data', 'state.json')),
 
