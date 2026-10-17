@@ -1,0 +1,310 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude usage</title>
+<style>
+  /*
+   * Meters, not charts. The data's job here is magnitude against a limit, one
+   * number per window, so a stat tile with a bar says it and a plot would not.
+   *
+   * The fill colour is a STATUS encoding, taken from the same thresholds that
+   * decide whether your phone buzzes - so the page and the notifications can
+   * never disagree about what counts as "getting close".
+   *
+   * Only one state is ever visible per meter, so the usual adjacent-pair
+   * colour-separation test does not apply; what does apply is that colour must
+   * never carry the meaning alone, which is why every meter shows its number
+   * and its state in words.
+   */
+  :root {
+    color-scheme: light;
+    --surface: #fcfcfb;
+    --card: #ffffff;
+    --line: #e4e3df;
+    --track: #eceae5;
+    --ink: #0b0b0b;
+    --ink-dim: #52514e;
+    --good: #0ca30c;
+    --warning: #fab219;
+    --serious: #ec835a;
+    --critical: #d03b3b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface: #1a1a19;
+      --card: #232322;
+      --line: #35342f;
+      --track: #302f2b;
+      --ink: #f0efec;
+      --ink-dim: #c3c2b7;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface: #1a1a19;
+    --card: #232322;
+    --line: #35342f;
+    --track: #302f2b;
+    --ink: #f0efec;
+    --ink-dim: #c3c2b7;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--surface);
+    color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
+
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 1.125rem; font-weight: 650; margin: 0; letter-spacing: -0.01em; }
+  .muted { color: var(--ink-dim); font-size: 0.8125rem; }
+
+  button {
+    font: inherit; font-size: 0.8125rem; color: var(--ink-dim);
+    background: transparent; border: 1px solid var(--line); border-radius: 7px;
+    padding: 5px 11px; cursor: pointer;
+  }
+  button:hover { color: var(--ink); }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 16px; margin-bottom: 14px;
+  }
+  .card h2 { font-size: 0.9375rem; font-weight: 650; margin: 0 0 14px; }
+
+  .meter + .meter { margin-top: 16px; }
+  .meter-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+  .meter-name { font-size: 0.8125rem; color: var(--ink-dim); }
+  /* The number is the headline: tabular so it does not jitter on refresh. */
+  .meter-value { font-size: 1.0625rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+
+  .track { height: 8px; background: var(--track); border-radius: 999px; overflow: hidden; }
+  /* Anchored to the start, rounded data-end, no animation on first paint. */
+  .fill { height: 100%; border-radius: 999px; transition: width 0.4s ease; }
+  .fill.good { background: var(--good); }
+  .fill.warning { background: var(--warning); }
+  .fill.serious { background: var(--serious); }
+  .fill.critical { background: var(--critical); }
+
+  .meter-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-top: 6px; font-size: 0.8125rem; color: var(--ink-dim); }
+  /* The state in words, because the colour must never say it alone. */
+  .state { font-weight: 600; }
+  .state.good { color: var(--good); }
+  .state.warning, .state.serious { color: var(--ink); }
+  .state.critical { color: var(--critical); }
+
+  .rows { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .row { display: flex; justify-content: space-between; gap: 10px; font-size: 0.8125rem; color: var(--ink-dim); }
+  .row + .row { margin-top: 4px; }
+  .row b { font-weight: 550; color: var(--ink); }
+
+  .alert { border-left: 3px solid var(--critical); padding-left: 10px; margin-top: 12px; font-size: 0.8125rem; }
+
+  form { display: flex; flex-direction: column; gap: 10px; }
+  input {
+    font: inherit; padding: 9px 11px; border-radius: 8px;
+    border: 1px solid var(--line); background: var(--surface); color: var(--ink);
+  }
+  form button { align-self: flex-start; padding: 8px 14px; color: var(--ink); }
+  .error { color: var(--critical); font-size: 0.8125rem; }
+</style>
+</head>
+<body>
+<main id="app"></main>
+
+<script>
+const STORE_KEY = 'claude-usage-relay.token';
+const REFRESH_MS = 60000;
+
+const STRINGS = {
+  en: {
+    title: 'Claude usage', refresh: 'Refresh', updated: 'updated',
+    five_hour: '5-hour window', seven_day: '7-day window',
+    resets: 'resets', left: 'left', expired: 'expired',
+    devices: 'Devices', never: 'never', ago: 'ago',
+    good: 'fine', warning: 'getting close', serious: 'nearly spent', critical: 'almost gone',
+    askTitle: 'Dashboard token', ask: 'Paste the read-only dashboard token.',
+    open: 'Open', rejected: 'That token was rejected.', failed: 'Could not reach the server.',
+    empty: 'No accounts reported yet.', signOut: 'Forget token',
+  },
+  tr: {
+    title: 'Claude kullanımı', refresh: 'Yenile', updated: 'güncellendi',
+    five_hour: '5 saatlik periyot', seven_day: '7 günlük periyot',
+    resets: 'sıfırlanma', left: 'kaldı', expired: 'doldu',
+    devices: 'Cihazlar', never: 'hiç', ago: 'önce',
+    good: 'rahat', warning: 'yaklaşıyor', serious: 'azaldı', critical: 'bitmek üzere',
+    askTitle: 'Panel anahtarı', ask: 'Salt okunur panel anahtarını yapıştır.',
+    open: 'Aç', rejected: 'Anahtar kabul edilmedi.', failed: 'Sunucuya ulaşılamadı.',
+    empty: 'Henüz rapor veren hesap yok.', signOut: 'Anahtarı unut',
+  },
+};
+
+let T = STRINGS.en;
+let token = '';
+try { token = localStorage.getItem(STORE_KEY) || ''; } catch (e) { token = ''; }
+
+const app = document.getElementById('app');
+const esc = (value) => String(value ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function remember(value) {
+  token = value;
+  try { value ? localStorage.setItem(STORE_KEY, value) : localStorage.removeItem(STORE_KEY); } catch (e) { /* private mode */ }
+}
+
+/* --- formatting ---------------------------------------------------------- */
+
+function clock(iso, withDate) {
+  const date = new Date(iso);
+  if (isNaN(date)) return '—';
+  const opts = { hour: '2-digit', minute: '2-digit', hour12: false };
+  if (withDate) { opts.day = '2-digit'; opts.month = 'short'; }
+  return date.toLocaleString(T === STRINGS.tr ? 'tr-TR' : 'en-GB', opts);
+}
+
+function span(ms) {
+  const total = Math.round(ms / 60000);
+  if (total <= 0) return null;
+  const days = Math.floor(total / 1440);
+  if (days >= 1) {
+    const hours = Math.round((total - days * 1440) / 60);
+    return T === STRINGS.tr
+      ? days + ' gün' + (hours ? ' ' + hours + ' saat' : '')
+      : days + 'd' + (hours ? ' ' + hours + 'h' : '');
+  }
+  const hours = Math.floor(total / 60);
+  const mins = total % 60;
+  if (!hours) return T === STRINGS.tr ? mins + ' dk' : mins + 'm';
+  if (!mins) return T === STRINGS.tr ? hours + ' saat' : hours + 'h';
+  return T === STRINGS.tr ? hours + ' sa ' + mins + ' dk' : hours + 'h ' + mins + 'm';
+}
+
+/* The band comes from the configured thresholds, so the colour on this page
+   and the moment your phone buzzes are the same decision.
+
+   Crossing the LAST threshold is always the worst state, whatever the list
+   length. Indexing a fixed four-name scale by the count instead would mean the
+   five-hour window - which has two thresholds - could never reach it, and 97%
+   of a limit would be drawn as merely "nearly spent". */
+function band(used, thresholds) {
+  const list = thresholds || [];
+  const crossed = list.filter((t) => used >= t).length;
+
+  if (!crossed) return 'good';
+  if (crossed >= list.length) return 'critical';
+  return crossed === 1 ? 'warning' : 'serious';
+}
+
+/* --- rendering ----------------------------------------------------------- */
+
+function meter(name, window, thresholds) {
+  if (!window || typeof window.used_percentage !== 'number') return '';
+
+  const used = Math.max(0, Math.min(100, window.used_percentage));
+  const level = band(used, thresholds);
+  const left = window.resets_at ? span(new Date(window.resets_at) - Date.now()) : null;
+  const weekly = name === 'seven_day';
+
+  return '<div class="meter">'
+    + '<div class="meter-head"><span class="meter-name">' + esc(T[name]) + '</span>'
+    + '<span class="meter-value">%' + Math.floor(used) + '</span></div>'
+    + '<div class="track"><div class="fill ' + level + '" style="width:' + used + '%"></div></div>'
+    + '<div class="meter-foot"><span class="state ' + level + '">' + esc(T[level]) + '</span>'
+    + '<span>' + esc(T.resets) + ' ' + esc(clock(window.resets_at, weekly))
+    + (left ? ' · ' + esc(left) + ' ' + esc(T.left) : ' · ' + esc(T.expired)) + '</span></div>'
+    + '</div>';
+}
+
+function accountCard(key, account, thresholds) {
+  const windows = account.windows || {};
+  const devices = Object.entries(account.devices || {});
+
+  let html = '<section class="card"><h2>' + esc(account.label || key) + '</h2>';
+  html += meter('five_hour', windows.five_hour, thresholds.five_hour);
+  html += meter('seven_day', windows.seven_day, thresholds.seven_day);
+
+  if (devices.length) {
+    html += '<div class="rows">';
+    for (const [name, device] of devices) {
+      const seen = span(Date.now() - new Date(device.last_seen_at));
+      html += '<div class="row"><b>' + esc(name) + '</b><span>'
+        + (seen === null ? esc(T.never) : esc(seen) + ' ' + esc(T.ago)) + '</span></div>';
+    }
+    html += '</div>';
+  }
+
+  if (account.source_error) {
+    html += '<div class="alert">' + esc(account.source_error.message) + '</div>';
+  }
+  return html + '</section>';
+}
+
+function renderState(state) {
+  const accounts = Object.entries(state.accounts || {});
+  const thresholds = state.thresholds || {};
+
+  let html = '<header><h1>' + esc(T.title) + '</h1>'
+    + '<button id="refresh">' + esc(T.refresh) + '</button></header>';
+
+  html += accounts.length
+    ? accounts.map(([key, account]) => accountCard(key, account, thresholds)).join('')
+    : '<section class="card"><p class="muted">' + esc(T.empty) + '</p></section>';
+
+  html += '<p class="muted">' + esc(T.updated) + ' ' + esc(clock(state.now, false))
+    + ' · <button id="forget">' + esc(T.signOut) + '</button></p>';
+
+  app.innerHTML = html;
+  document.getElementById('refresh').onclick = load;
+  document.getElementById('forget').onclick = () => { remember(''); askForToken(); };
+}
+
+function askForToken(message) {
+  app.innerHTML = '<header><h1>' + esc(T.askTitle) + '</h1></header>'
+    + '<section class="card"><form id="auth">'
+    + '<p class="muted" style="margin:0">' + esc(T.ask) + '</p>'
+    + '<input id="token" type="password" autocomplete="current-password" spellcheck="false">'
+    + (message ? '<p class="error">' + esc(message) + '</p>' : '')
+    + '<button type="submit">' + esc(T.open) + '</button>'
+    + '</form></section>';
+
+  document.getElementById('auth').onsubmit = (event) => {
+    event.preventDefault();
+    const value = document.getElementById('token').value.trim();
+    if (!value) return;
+    remember(value);
+    load();
+  };
+}
+
+async function load() {
+  if (!token) { askForToken(); return; }
+
+  let response;
+  try {
+    response = await fetch('state', { headers: { authorization: 'Bearer ' + token }, cache: 'no-store' });
+  } catch (e) {
+    askForToken(T.failed);
+    return;
+  }
+
+  if (response.status === 401) { remember(''); askForToken(T.rejected); return; }
+  if (!response.ok) { askForToken(T.failed); return; }
+
+  const state = await response.json();
+  if (STRINGS[state.language]) T = STRINGS[state.language];
+  document.documentElement.lang = state.language || 'en';
+  document.title = T.title;
+  renderState(state);
+}
+
+load();
+setInterval(() => { if (token) load(); }, REFRESH_MS);
+</script>
+</body>
+</html>

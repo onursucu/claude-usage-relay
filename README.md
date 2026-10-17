@@ -40,6 +40,7 @@ clock, not from your machine, so it still reaches you when your laptop is closed
 | **A long turn is stuck** | The job you walked away from stopped at minute three for a permission prompt. Without this it would simply sit there. |
 | **Several machines** | Every machine reports the same account-level figures, so they simply agree. No syncing between your computers. |
 | **Several accounts** | Switch between a personal and a work account and each keeps its own window, thresholds and reset alert — fired from the server's clock, so you hear that a limit came back on an account you are not currently signed in to. Every alert says which account it is for, once there is more than one. |
+| **A dashboard** | A page at `/` showing every account's windows, how long is left, and which machines have reported. Read-only, behind its own token. |
 | **Nothing to leak** | The server never sees a Claude token — see below. |
 
 ## How it gets the numbers
@@ -85,6 +86,16 @@ Leave off `--systemd` to only write the config and run the server yourself with
 `npm start`. Everything the script sets can be edited afterwards in
 `packages/notify-server/.env`, which documents every option — `NOTIFY_LANGUAGE`,
 `DISPLAY_TIMEZONE` and `USAGE_THRESHOLDS` are the ones most people change.
+
+The dashboard lives at `/` and is read-only. Give it its own token so the one
+that can write reports never goes near a browser:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+```
+
+Put that in `DASHBOARD_TOKEN`, open the server's URL, and paste it once — the
+page keeps it in `localStorage`. Leave the setting empty to turn the page off.
 
 Check that notifications actually arrive before going further:
 
@@ -288,6 +299,13 @@ and 7-day windows are tracked side by side and never overwrite each other.
 
 **Only the 5-hour window announces its start.** A weekly window opening is the
 same news as the previous one resetting, and nobody needs to hear it twice.
+
+**The dashboard reads its colours from the alert thresholds.** `GET /state`
+returns `thresholds`, and the page bands its meters by them, so the colour you
+see and the moment your phone buzzes cannot drift apart. Crossing the last
+threshold is always the worst band, whatever the list length — indexing a fixed
+scale by the count would leave the 5-hour window, which has two thresholds,
+unable to ever reach it.
 
 **Adopting an account is quiet.** If the server sees an account for the first
 time mid-window, it records the window without announcing it. Otherwise starting

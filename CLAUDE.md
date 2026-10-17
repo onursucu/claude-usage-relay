@@ -149,12 +149,13 @@ keeps its own expiry and fires a duplicate reset alert.
 
 ## Roadmap
 
-1. **Web dashboard** on top of `GET /state`. The endpoint already returns
-   everything a dashboard needs.
+1. **Make the dashboard do something.** It is read-only today. The obvious
+   addition is the start button that already exists on the notification.
 2. **Other CLIs (Codex and friends)** — same protocol, a different collector.
    Each tool needs its own source of numbers; the server does not care.
 3. **Optional standalone poller** — for usage data while Claude Code is not
    running. Must be opt-in, clearly marked as unofficial, and must never
    outrank a fresh status line reading.
-4. **A dashboard token** — `GET /state` takes the relay token today, which is a
-   write credential. A browser should get a read-only one instead.
+4. **Serve the dashboard's assets properly** if it ever outgrows one file.
+   `GET /` reads a single HTML file and caches it in memory; there is no static
+   file server and deliberately so.

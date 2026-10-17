@@ -24,6 +24,7 @@ const WORK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-usage-relay-e2e-'
 const NO_ACCOUNT = path.join(WORK_DIR, 'no-account.json');
 
 const RELAY_TOKEN = 'e2e-token-0000000000';
+const DASHBOARD_TOKEN = 'e2e-dashboard-token-00';
 
 /**
  * Deliberately odd ports. This suite is meant to be runnable on the very host
@@ -59,6 +60,7 @@ const server = spawn(process.execPath, [path.join(REPO_ROOT, 'packages/notify-se
     PORT: String(SERVER_PORT),
     HOST: '127.0.0.1',
     RELAY_TOKEN,
+    DASHBOARD_TOKEN,
     DATA_DIR: path.join(WORK_DIR, 'server'),
     NTFY_URL: `http://127.0.0.1:${NTFY_PORT}`,
     NTFY_TOPIC: 'e2e',
@@ -182,6 +184,34 @@ check('an alert names its account once there are several', pushed.every((item) =
 
 // 7. the basics
 check('unauthorized request rejected', (await fetch(`http://127.0.0.1:${SERVER_PORT}/state`)).status === 401);
+
+const page = await fetch(`http://127.0.0.1:${SERVER_PORT}/`);
+const pageBody = await page.text();
+check('the dashboard page needs no token to load', page.status === 200 && pageBody.includes('<!doctype html'), `status ${page.status}`);
+check('the dashboard page carries no secret of its own', !pageBody.includes(RELAY_TOKEN) && !pageBody.includes(DASHBOARD_TOKEN));
+
+const readOnly = await fetch(`http://127.0.0.1:${SERVER_PORT}/state`, {
+  headers: { authorization: `Bearer ${DASHBOARD_TOKEN}` },
+});
+check('the dashboard token can read state', readOnly.status === 200, `status ${readOnly.status}`);
+
+const stateBody = await readOnly.json();
+check('state carries what the meters need', Boolean(stateBody.thresholds?.five_hour && stateBody.thresholds?.seven_day && stateBody.language), JSON.stringify(stateBody.thresholds));
+
+// The whole reason for a second token: it must not be able to write.
+const forged = await fetch(`http://127.0.0.1:${SERVER_PORT}/report`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', authorization: `Bearer ${DASHBOARD_TOKEN}` },
+  body: JSON.stringify({ provider: 'claude', account: 'forged', windows: { five_hour: { used_percentage: 1, resets_at: new Date().toISOString() } } }),
+});
+check('the dashboard token cannot write a report', forged.status === 401, `status ${forged.status}`);
+
+const notifyForged = await fetch(`http://127.0.0.1:${SERVER_PORT}/notify`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', authorization: `Bearer ${DASHBOARD_TOKEN}` },
+  body: JSON.stringify({ type: 'test' }),
+});
+check('the dashboard token cannot push a notification', notifyForged.status === 401, `status ${notifyForged.status}`);
 check('health endpoint is open', (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`)).status === 200);
 
 // 8. the turn notifier, driven exactly as Claude Code drives it

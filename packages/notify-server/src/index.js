@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import http from 'node:http';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 
-import { config, notificationsConfigured, startConfigured } from './lib/config.js';
+import { config, notificationsConfigured, startConfigured, PACKAGE_ROOT } from './lib/config.js';
 import { log } from './lib/log.js';
 import { loadState, saveState, accountKey } from './lib/store.js';
 import { ingestReport, checkWindowReset, evaluateStartRequest, recordStartResult } from './lib/detector.js';
@@ -19,6 +21,9 @@ const RESET_CHECK_INTERVAL_MS = 30_000;
  * able to fake a reset. These are the ones only the client can know about.
  */
 const CLIENT_EVENT_TYPES = new Set(['turn_done', 'turn_failed', 'turn_waiting', 'test']);
+
+const DASHBOARD_FILE = path.join(PACKAGE_ROOT, 'src', 'public', 'dashboard.html');
+let dashboardHtml;
 
 const detectorOptions = {
   onWindowStart: config.notify.onWindowStart,
@@ -42,6 +47,28 @@ function isAuthorized(req, expected) {
   const a = Buffer.from(provided);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+const isAuthorizedAny = (req, candidates) => candidates.some((token) => isAuthorized(req, token));
+
+/**
+ * The page itself is public: it holds no secret, it only knows how to ask for
+ * one. Everything it then shows comes from /state, which is not public.
+ */
+function serveDashboard(res) {
+  try {
+    dashboardHtml ??= fs.readFileSync(DASHBOARD_FILE);
+  } catch {
+    json(res, 404, { ok: false, error: 'dashboard is not installed' });
+    return;
+  }
+
+  res.writeHead(200, {
+    'content-type': 'text/html; charset=utf-8',
+    'content-length': dashboardHtml.length,
+    'cache-control': 'no-store',
+  });
+  res.end(dashboardHtml);
 }
 
 function readJsonBody(req) {
@@ -258,9 +285,17 @@ function buildStateResponse() {
           updated_at: account.updated_at,
           source: account.source,
           source_error: account.source_error,
+          // Resolved here rather than in the page, so the dashboard and the
+          // notifications call an account by the same name.
+          label: config.accountLabels[key] ?? config.accountLabels[key.replace(/^[^:]*:/, '')] ?? null,
         },
       ]),
     ),
+
+    // The dashboard colours its meters by these, so the band it draws and the
+    // moment a notification fires are the same decision.
+    thresholds: config.notify.thresholds,
+    language: config.notify.language,
   };
 }
 
@@ -305,6 +340,22 @@ async function handleRequest(req, res) {
 
     const { status, payload } = await handleStart();
     json(res, status, payload);
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/') {
+    serveDashboard(res);
+    return;
+  }
+
+  // Readable with either token; the dashboard's is read-only and gets no
+  // further than this.
+  if (req.method === 'GET' && url.pathname === '/state') {
+    if (!isAuthorizedAny(req, [config.relayToken, config.dashboardToken])) {
+      json(res, 401, { ok: false, error: 'unauthorized' });
+      return;
+    }
+    json(res, 200, buildStateResponse());
     return;
   }
 
@@ -355,11 +406,6 @@ async function handleRequest(req, res) {
     // Accepted, not delivered: the push happens after this response, so the
     // hook on the other end never waits for ntfy.
     json(res, 202, { ok: true, type: body.type });
-    return;
-  }
-
-  if (req.method === 'GET' && url.pathname === '/state') {
-    json(res, 200, buildStateResponse());
     return;
   }
 

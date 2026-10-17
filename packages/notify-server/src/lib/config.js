@@ -66,6 +66,13 @@ export const config = {
    */
   accountLabels: map(process.env.ACCOUNT_LABELS),
 
+  /**
+   * Read-only credential for the dashboard. Separate from RELAY_TOKEN on
+   * purpose: that one can write reports, and it has no business being pasted
+   * into a browser and left in localStorage. Empty disables the page.
+   */
+  dashboardToken: str(process.env.DASHBOARD_TOKEN),
+
   ntfy: {
     url: str(process.env.NTFY_URL, 'https://ntfy.sh').replace(/\/+$/, ''),
     topic: str(process.env.NTFY_TOPIC),
