@@ -23,8 +23,11 @@ Two rounds of searching GitHub and the web established:
   (`ccgram`, `Claude-Code-Remote`, `claude-notifications-go`) is driven by local
   shell hooks, which fire on task-complete / permission-needed events while
   Claude Code runs — never on "a usage window opened".
-- **There is no hook for rate-limit events.** Confirmed in
+- **There is no hook for rate-limit *window* events.** Confirmed in
   `anthropics/claude-code` issues #34817 and #47276. Do not go looking for one.
+  Note what this does *not* say: `StopFailure` does fire when a turn dies on a
+  rate limit, and the turn notifier uses it. What is missing is any hook for a
+  window opening or resetting, which is why the status line exists.
 - **The status line is the only official source of window data**, and it is
   enough. See `docs/PROTOCOL.md`.
 
@@ -41,6 +44,9 @@ So this project reads only the documented `statusLine` stdin JSON. Consequences
 worth remembering:
 
 - No credentials are read, so there is nothing to leak and nothing to refresh.
+  `src/lib/account.js` is the one file that opens anything else, and what it
+  opens is `~/.claude.json` — Claude Code's config, not its credentials — for
+  an opaque `accountUuid`. Keep `.credentials.json` out of this project.
 - Data only arrives while Claude Code is running — which is fine, because a
   window can only *start* while you are using Claude, and the *reset* is derived
   from `resets_at` by the server.
@@ -56,6 +62,15 @@ and forwards; it makes no decisions about notifications. That is what lets the
 reset alert fire with every machine switched off, and what makes several
 machines reporting the same account trivially consistent — the numbers are
 account-level, so they agree by construction.
+
+The turn notifier is the deliberate exception, and it is worth knowing why.
+Only the machine running Claude Code knows how long a turn took, so that hook
+decides *whether* to notify and posts the result to `POST /notify`. The server
+still composes the message, so the language and timezone settings keep applying.
+That endpoint takes an **allowlist** of event types (`turn_done`,
+`turn_failed`, `test`) rather than anything with a template: window events
+belong to the detector, and a leaked relay token must not be able to fake a
+reset. Add a client-decided event and it goes in that set, consciously.
 
 **4. Adoption is silent.** First time the server sees an account mid-window it
 records the window without announcing it, otherwise starting the server would
@@ -74,40 +89,59 @@ supply chain behind it. Keep it this way.
   `Date.now()` inside — the clock is always passed in. This is why the tests can
   drive months of scenarios in milliseconds. Keep new logic pure and test it.
 - Anything Claude-Code-shaped is confined to
-  `packages/usage-agent/src/lib/normalize.js`. If Claude Code changes its status
-  line JSON, that is the only file to touch.
-- Never let the status line throw. It prints something no matter what.
+  `packages/usage-agent/src/lib/normalize.js` for the status line, and to
+  `packages/usage-agent/src/hooks/turn-notify.js` for the hook payloads. If
+  Claude Code changes either shape, those are the only files to touch.
+- Never let the status line throw. It prints something no matter what. The same
+  goes for the hook: it swallows everything and exits 0, and it prints nothing
+  at all on stdout, because an async hook's stdout is parsed as a JSON response
+  and fed back to Claude.
+- Hooks are registered with `"async": true`. Claude Code then never waits for
+  them and never enforces their timeout, which is why the hook guards its own
+  stdin read with a timer — a lingering process is the one way it could hurt.
 - Nothing personal in the repo: no domains, hostnames, tokens, or usernames.
   Placeholders only (`your-domain.example`), everything real lives in `.env`.
 
 ## Status
 
-Phase 1 is complete and verified:
+Phase 1 is complete, deployed and verified:
 
 ```bash
 npm test     # 11 detector unit tests
-npm run e2e  # 13 checks, real chain, mock ntfy, offline
+npm run e2e  # 23 checks, real chain, mock ntfy, offline
 ```
 
 The e2e check includes a window reset fired purely from the server's clock with
-the agent silent — the behaviour the whole project exists for.
+the agent silent — the behaviour the whole project exists for — and drives the
+turn notifier through the exact payloads Claude Code sends it.
 
-Not yet done: nothing is deployed. The server has never run anywhere but
-localhost, and the status line has not been installed into `settings.json` on a
-real machine (`node scripts/install-statusline.mjs --apply` does that, with a
-backup and a `--revert`).
+Phase 2, the turn notifier, is written and tested: `src/hooks/turn-notify.js`
+plus `POST /notify`, installed with `node scripts/install-hooks.mjs --apply`.
+It covers a turn finishing, dying, and stalling on a prompt. The `Notification`
+subscription is narrowed to `permission_prompt` and `agent_needs_input` on
+purpose: `idle_prompt` fires about a minute after Claude finishes, so taking it
+would mean two pushes for one event.
+
+Multiple accounts work as of `src/lib/account.js`: the agent detects the
+signed-in account rather than reporting a fixed label, so switching accounts no
+longer overwrites the previous one's window. Upgrading an existing install means
+clearing `ACCOUNT_LABEL=default` from `.env` **and** renaming that account's key
+in the server's `data/state.json` — otherwise the stale `claude:default` entry
+keeps its own expiry and fires a duplicate reset alert.
 
 ## Roadmap
 
-1. **Deploy** — server on an always-on host behind a reverse proxy, agent
-   installed on each machine with a distinct `DEVICE_NAME`.
-2. **Web dashboard** on top of `GET /state`. The endpoint already returns
+1. **Web dashboard** on top of `GET /state`. The endpoint already returns
    everything a dashboard needs.
-3. **Multiple accounts** — the wire format already carries `provider` and
-   `account`, and the server keys state by `provider:account`. The missing piece
-   is agent-side: one install currently reports one account.
-4. **Other CLIs (Codex and friends)** — same protocol, a different collector.
+2. **Other CLIs (Codex and friends)** — same protocol, a different collector.
    Each tool needs its own source of numbers; the server does not care.
-5. **Optional standalone poller** — for usage data while Claude Code is not
+3. **Optional standalone poller** — for usage data while Claude Code is not
    running. Must be opt-in, clearly marked as unofficial, and must never
    outrank a fresh status line reading.
+4. **Weekly window alerts** — `detector.js` only ever reads `five_hour`, so the
+   `seven_day` window is stored and displayed but never alerted on. Doing it
+   means splitting `tracking` per window, and note the trap: `window-starter`'s
+   `evaluateStartRequest` reads `accountState.tracking.window_id` directly and
+   would silently stop guarding against a start while a window is open.
+5. **A dashboard token** — `GET /state` takes the relay token today, which is a
+   write credential. A browser should get a read-only one instead.

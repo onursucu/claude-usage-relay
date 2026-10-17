@@ -1,7 +1,8 @@
 # claude-usage-relay
 
 Get a push notification the moment your Claude 5-hour usage window resets — even
-while every one of your computers is switched off.
+while every one of your computers is switched off — and another when the
+hour-long job you walked away from is finally done.
 
 Claude Code already knows how much of your 5-hour window you have used. It just
 has no way to tell you once you walk away from the keyboard. This project fixes
@@ -33,7 +34,11 @@ clock, not from your machine, so it still reaches you when your laptop is closed
 | **New window opened** | Told the moment a fresh 5-hour window starts, with the exact reset time. |
 | **Approaching the limit** | Configurable thresholds (80% and 95% by default), once each per window. |
 | **Limit reset** | The one that matters when you are away from the desk. Fires from the server. |
+| **A long turn finished** | Walk away from a job that takes an hour and hear about it when it ends, with the first lines of the answer. Short turns stay silent. |
+| **A long turn died** | A rate limit or an overloaded API killed the job after forty minutes. You find out now, not at midnight. |
+| **A long turn is stuck** | The job you walked away from stopped at minute three for a permission prompt. Without this it would simply sit there. |
 | **Several machines** | Every machine reports the same account-level figures, so they simply agree. No syncing between your computers. |
+| **Several accounts** | Switch between a personal and a work account and each keeps its own window, thresholds and reset alert. The agent works out which one is signed in. |
 | **Nothing to leak** | The server never sees a Claude token — see below. |
 
 ## How it gets the numbers
@@ -103,7 +108,66 @@ subscribe to the topic you generated. That is the whole setup.
 
 > On the public `ntfy.sh` instance a topic is readable by anyone who knows its
 > name, so treat the name as a secret — hence the random one above. For real
-> privacy, [self-host ntfy](https://docs.ntfy.sh/install/) and set `NTFY_TOKEN`.
+> privacy, self-host ntfy as described below.
+
+### Optional: self-hosting ntfy
+
+Worth it if you would rather no third party saw your notifications at all. On
+Debian/Ubuntu, [install ntfy from its apt repository](https://docs.ntfy.sh/install/),
+then keep `/etc/ntfy/server.yml` this small:
+
+```yaml
+base-url: "https://ntfy.your-domain.example"
+listen-http: "127.0.0.1:2586"       # only your reverse proxy reaches it
+cache-file: "/var/cache/ntfy/cache.db"
+cache-duration: "12h"
+auth-file: "/var/lib/ntfy/user.db"
+auth-default-access: "deny-all"     # this line is the privacy
+behind-proxy: true                  # trust X-Forwarded-For for rate limiting
+```
+
+Then give each side only the access it needs — the server publishes, the phone
+reads, and nobody else can do either:
+
+```bash
+ntfy user add relay                 # notify-server publishes as this user
+ntfy access relay <topic> write
+ntfy token add relay                # put the token in NTFY_TOKEN
+
+ntfy user add phone                 # your phone reads as this user
+ntfy access phone <topic> read
+```
+
+Point `NTFY_URL` at your own instance and you are done. Two things that are
+easy to get wrong:
+
+- **`deny-all` really means all.** Confirm it: an unauthenticated
+  `curl https://ntfy.your-domain.example/<topic>/json?poll=1` must return `403`.
+  A write-only token failing to *read* is also correct, not a bug.
+- **The subscription is a long-lived stream.** Whatever proxies ntfy needs
+  `proxy_http_version 1.1`, the `Upgrade`/`Connection` headers, a long
+  `proxy_read_timeout` (default 60s will cut the connection repeatedly) and
+  `proxy_buffering off`, or messages arrive late.
+
+#### If you are behind aaPanel
+
+aaPanel can host both services, with one trap: when you add a reverse proxy it
+prefills **Proxy directory** with the domain name. That is a URL *path*, so the
+proxy then only answers on `https://your-domain.example/your-domain.example/…`
+and everything else falls through to the empty site root as a 404. Set it to `/`.
+
+Its proxy template does include the WebSocket headers, but not the timeouts, so
+append these to the generated file in
+`/www/server/panel/vhost/nginx/proxy/<domain>/`:
+
+```nginx
+proxy_read_timeout 3600s;
+proxy_send_timeout 3600s;
+proxy_buffering off;
+proxy_cache off;
+```
+
+Re-editing the proxy in the aaPanel UI regenerates that file and drops them.
 
 ### 3. Each machine you work on
 
@@ -117,6 +181,10 @@ RELAY_URL=https://your-domain.example
 RELAY_TOKEN=<the same token as the server>
 DEVICE_NAME=desktop
 ```
+
+Leave `ACCOUNT_LABEL` empty. The agent then works out which Claude account is
+signed in, so each account gets its own window tracked on the server instead of
+overwriting the last one's. Set it only to give an account a name you prefer.
 
 Then point Claude Code's status line at the agent:
 
@@ -143,6 +211,40 @@ back. Repeat on every machine, with a different `DEVICE_NAME` and the same
 The agent works without a server too: leave `RELAY_URL` empty and you still get
 the widget, just no notifications.
 
+### 4. Optional: be told when a long turn ends
+
+The usage relay answers *when does my limit come back*. This answers the other
+question you have once you have left the desk: *is that hour-long job done yet*.
+
+```bash
+node scripts/install-hooks.mjs          # shows what it would change
+node scripts/install-hooks.mjs --apply  # writes it (backs up first)
+```
+
+That registers one script on three of Claude Code's hooks:
+
+| | |
+| --- | --- |
+| `UserPromptSubmit` | Stamps when the turn started. |
+| `Stop` | The turn ended. Pushes only if it ran past `NOTIFY_MIN_TURN_SECONDS`, with the opening lines of Claude's answer. |
+| `StopFailure` | The turn died on an API error — a rate limit, an overloaded API. Pushes whatever the duration. |
+| `Notification` | Claude stopped to ask you something. Subscribed to `permission_prompt` and `agent_needs_input` only — **not** `idle_prompt`, which fires a minute after Claude finishes and would double up on the turn-finished push. |
+
+All three are registered with `"async": true`, so Claude Code starts the hook
+and carries straight on. A slow server, an unreachable one, a hung request —
+none of it can make the editor feel stuck.
+
+Hooks are read when a session starts, so open a new one. Then check it works
+without waiting an hour:
+
+```bash
+NOTIFY_MIN_TURN_SECONDS=0 claude -p "say hi"
+```
+
+The threshold is the setting that matters. `Stop` fires at the end of *every*
+turn and most turns take seconds, so the default 5 minutes is what keeps your
+phone quiet while you work. Lower it and you will regret it.
+
 ## Configuration
 
 Every option lives in the two `.env.example` files, which document themselves.
@@ -159,6 +261,11 @@ The ones worth knowing about:
 | --- | --- | --- |
 | `RELAY_MIN_INTERVAL_SECONDS` | `180` | The status line re-renders constantly; this is how often it may actually report. A new window always reports immediately. |
 | `DEVICE_NAME` | hostname | Shown in notifications. |
+| `ACCOUNT_LABEL` | the signed-in account | Which account the numbers belong to. Leave empty to detect it; set it to name an account yourself. |
+| `NOTIFY_MIN_TURN_SECONDS` | `300` | How long a turn must run to earn a push. |
+| `NOTIFY_ON_TURN_FAILURE` | `true` | Push when a turn dies on an API error, however short. |
+| `NOTIFY_WAITING_AFTER_SECONDS` | `120` | How long a turn must have been running before "Claude is waiting on you" counts as news. Below it you are probably still watching the screen. |
+| `NOTIFY_WAITING_COOLDOWN_SECONDS` | `600` | Stops a job stalled for an hour from buzzing every few seconds. |
 
 ## Design notes
 
@@ -179,6 +286,23 @@ the server would greet you with a "new window started" that is hours old.
 **Everything notification-related is pure.** The detector takes state and a
 report and returns new state plus events, with no I/O and no clock of its own,
 which is why the test suite can drive months of scenarios in milliseconds.
+
+**The account is detected, not configured.** The status line payload carries the
+window numbers but no identity at all, so a fixed label would file every account
+under one key — and the first time you switched accounts you would stop being
+told when the previous one's limit came back. So the agent reads `accountUuid`
+from `~/.claude.json`, Claude Code's own config. That is not the credentials
+file: `~/.claude/.credentials.json` is still never opened, the identifier is
+opaque rather than secret, and the read costs about half a millisecond against a
+node startup of thirty.
+
+**The turn notifier is the one client that decides for itself.** Everywhere else
+the agent is dumb and the server rules, because the server is the only thing
+still awake when a window expires. A turn is the opposite: only the machine
+running Claude Code knows how long it took, so the hook decides *whether* to
+notify. The server still composes the message, so `NOTIFY_LANGUAGE` and
+`DISPLAY_TIMEZONE` keep applying — and `POST /notify` takes an allowlist of
+event types, so a leaked relay token still cannot fake a window reset.
 
 ## Tests
 

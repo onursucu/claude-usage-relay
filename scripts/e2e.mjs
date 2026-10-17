@@ -15,6 +15,14 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const REPO_ROOT = path.resolve(fileURLToPath(import.meta.url), '../..');
 const WORK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-usage-relay-e2e-'));
 
+/**
+ * Account detection reads whoever is signed in on this machine, which would
+ * make the run depend on the developer's own account. Pointing it at a file
+ * that does not exist pins every check below to the 'default' fallback; the
+ * account checks opt back in explicitly.
+ */
+const NO_ACCOUNT = path.join(WORK_DIR, 'no-account.json');
+
 const RELAY_TOKEN = 'e2e-token-0000000000';
 const NTFY_PORT = 8899;
 const SERVER_PORT = 8788;
@@ -73,6 +81,7 @@ function runStatusline(rateLimits, extraEnv = {}) {
         DEVICE_NAME: 'e2e-desktop',
         LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent', 'state.json'),
         RELAY_MIN_INTERVAL_SECONDS: '0',
+        CLAUDE_ACCOUNT_FILE: NO_ACCOUNT,
         ...extraEnv,
       },
     });
@@ -150,6 +159,151 @@ check('reset pushed by the server clock alone', resetPushed, titles());
 check('unauthorized request rejected', (await fetch(`http://127.0.0.1:${SERVER_PORT}/state`)).status === 401);
 check('health endpoint is open', (await fetch(`http://127.0.0.1:${SERVER_PORT}/health`)).status === 200);
 
+// 7. the turn notifier, driven exactly as Claude Code drives it
+const HOOK = path.join(REPO_ROOT, 'packages/usage-agent/src/hooks/turn-notify.js');
+const HOOK_DATA = path.join(WORK_DIR, 'hooks', 'state.json');
+
+function runHook(payload, extraEnv = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [HOOK], {
+      env: {
+        ...process.env,
+        RELAY_URL: `http://127.0.0.1:${SERVER_PORT}`,
+        RELAY_TOKEN,
+        DEVICE_NAME: 'e2e-desktop',
+        LOCAL_STATE_PATH: HOOK_DATA,
+        CLAUDE_ACCOUNT_FILE: NO_ACCOUNT,
+        ...extraEnv,
+      },
+    });
+
+    let out = '';
+    child.stdout.on('data', (data) => { out += data; });
+    child.on('error', reject);
+    child.on('close', (code) => resolve({ code, out }));
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+
+const turn = (event, extra = {}) => ({
+  hook_event_name: event,
+  session_id: 'e2e-session',
+  cwd: '/home/e2e/my-project',
+  ...extra,
+});
+
+pushed.length = 0;
+const stopped = await runHook(turn('Stop', { last_assistant_message: 'done' }));
+await sleep(800);
+check('a turn with no recorded start stays quiet', pushed.length === 0, titles());
+check('the hook prints nothing on stdout', stopped.out === '', JSON.stringify(stopped.out));
+
+await runHook(turn('UserPromptSubmit', { prompt: 'go' }));
+await runHook(turn('Stop', { last_assistant_message: 'done' }));
+await sleep(800);
+check('a short turn is below the threshold', pushed.length === 0, titles());
+
+const longAnswer = 'Refactored the parser.\n\n```js\nsecretcode\n```';
+await runHook(turn('UserPromptSubmit', { prompt: 'go' }));
+await runHook(turn('Stop', { last_assistant_message: longAnswer }), { NOTIFY_MIN_TURN_SECONDS: '0' });
+await sleep(800);
+const done = pushed.find((item) => item.title?.includes('done after'));
+check('a long turn is pushed', Boolean(done), titles());
+check('the push names the device and project', done?.message?.includes('e2e-desktop · my-project') === true, JSON.stringify(done?.message));
+check('the summary keeps the prose', done?.message?.includes('Refactored the parser.') === true, JSON.stringify(done?.message));
+check('the summary drops fenced code', done?.message?.includes('secretcode') === false, JSON.stringify(done?.message));
+
+pushed.length = 0;
+await runHook(turn('UserPromptSubmit', { prompt: 'go' }));
+await runHook(turn('StopFailure', { error: 'rate_limit', error_details: '429 Too Many Requests' }));
+await sleep(800);
+check('a failed turn is pushed whatever its length', pushed.some((item) => item.title?.includes('did not finish')), titles());
+check('the failure says why', pushed.some((item) => item.message?.includes('usage limit')), JSON.stringify(pushed.map((item) => item.message)));
+
+// A Notification with no turn on record cannot tell "away" from "at the desk".
+// Its own session id matters: StopFailure above deliberately leaves its mark.
+pushed.length = 0;
+await runHook(
+  { hook_event_name: 'Notification', session_id: 'e2e-never-prompted', cwd: '/home/e2e/my-project', notification_type: 'permission_prompt', message: 'needs permission' },
+  { NOTIFY_WAITING_AFTER_SECONDS: '0' },
+);
+await sleep(800);
+check('waiting with no turn on record stays quiet', pushed.length === 0, titles());
+
+pushed.length = 0;
+await runHook(turn('UserPromptSubmit', { prompt: 'go' }));
+await runHook(turn('Notification', { notification_type: 'permission_prompt', message: 'needs permission' }));
+await sleep(800);
+check('waiting on a young turn stays quiet', pushed.length === 0, titles());
+
+pushed.length = 0;
+
+await runHook(
+  turn('Notification', { notification_type: 'permission_prompt', message: 'Claude needs your permission' }),
+  { NOTIFY_WAITING_AFTER_SECONDS: '0' },
+);
+await sleep(800);
+const waiting = pushed.find((item) => item.title?.includes('seni bekliyor') || item.title?.includes('waiting on you'));
+check('waiting on a long turn is pushed', Boolean(waiting), titles());
+check('the waiting push says why', waiting?.message?.includes('permission') === true, JSON.stringify(waiting?.message));
+
+pushed.length = 0;
+await runHook(
+  turn('Notification', { notification_type: 'permission_prompt', message: 'again' }),
+  { NOTIFY_WAITING_AFTER_SECONDS: '0' },
+);
+await sleep(800);
+check('a second waiting push is held back by the cooldown', pushed.length === 0, titles());
+
+await runHook(
+  turn('Notification', { notification_type: 'idle_prompt', message: 'idle' }),
+  { NOTIFY_WAITING_AFTER_SECONDS: '0', NOTIFY_WAITING_COOLDOWN_SECONDS: '0' },
+);
+await sleep(800);
+check('idle_prompt is ignored, so it cannot double up on turn_done', pushed.length === 0, titles());
+
+const faked = await fetch(`http://127.0.0.1:${SERVER_PORT}/notify`, {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', authorization: `Bearer ${RELAY_TOKEN}` },
+  body: JSON.stringify({ type: 'window_reset' }),
+});
+check('/notify refuses to fake a detector event', faked.status === 400, `status ${faked.status}`);
+
+// 8. the account the agent reports under
+async function stateNow() {
+  const response = await fetch(`http://127.0.0.1:${SERVER_PORT}/state`, {
+    headers: { authorization: `Bearer ${RELAY_TOKEN}` },
+  });
+  return (await response.json()).accounts;
+}
+
+const accountFile = path.join(WORK_DIR, 'claude.json');
+fs.writeFileSync(accountFile, JSON.stringify({ oauthAccount: { accountUuid: 'ABC12345-dead-beef-0000-111122223333' } }));
+
+const detected = await runStatusline(
+  { five_hour: { used_percentage: 2, resets_at: epoch(now + 280 * 60_000) }, seven_day: sevenDay },
+  { ACCOUNT_LABEL: '', CLAUDE_ACCOUNT_FILE: accountFile, LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent3', 'state.json') },
+);
+await sleep(3000);
+let accounts = await stateNow();
+check('the signed-in account becomes the key', Boolean(accounts['claude:abc12345']), Object.keys(accounts).join(', '));
+check('the status line still renders while detecting', detected.code === 0 && detected.out.includes('5h'), JSON.stringify(detected.out));
+
+await runStatusline(
+  { five_hour: { used_percentage: 5, resets_at: epoch(now + 275 * 60_000) }, seven_day: sevenDay },
+  { ACCOUNT_LABEL: 'by-hand', CLAUDE_ACCOUNT_FILE: accountFile, LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent4', 'state.json') },
+);
+await sleep(3000);
+accounts = await stateNow();
+check('an explicit ACCOUNT_LABEL still wins', Boolean(accounts['claude:by-hand']), Object.keys(accounts).join(', '));
+
+const signedOut = await runStatusline(
+  { five_hour: { used_percentage: 7, resets_at: epoch(now + 270 * 60_000) }, seven_day: sevenDay },
+  { ACCOUNT_LABEL: '', CLAUDE_ACCOUNT_FILE: path.join(WORK_DIR, 'nothing-here.json'), LOCAL_STATE_PATH: path.join(WORK_DIR, 'agent5', 'state.json') },
+);
+check('a missing config never breaks the status line', signedOut.code === 0 && signedOut.out.includes('5h'), JSON.stringify(signedOut.out));
+
+// 9. the basics
 const empty = await runStatusline({});
 check('empty payload still renders', empty.code === 0 && empty.out.trim().length > 0, JSON.stringify(empty.out));
 

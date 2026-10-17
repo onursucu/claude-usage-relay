@@ -88,6 +88,19 @@ const ERROR_LABELS = {
   },
 };
 
+
+/** Why Claude stopped to ask. Anything unlisted falls back to a plain wording. */
+const WAITING_REASONS = {
+  en: {
+    permission_prompt: 'it needs permission to continue',
+    agent_needs_input: 'an agent is asking for input',
+  },
+  tr: {
+    permission_prompt: 'devam etmek için izin bekliyor',
+    agent_needs_input: 'bir ajan girdi bekliyor',
+  },
+};
+
 const PACKS = {
   en: {
     window_start(event) {
@@ -148,6 +161,15 @@ const PACKS = {
       return {
         title: 'Claude · the job did not finish',
         message: [`${ran} — ${label}.`, where(event), event.detail].filter(Boolean).join('\n'),
+      };
+    },
+    turn_waiting(event) {
+      const duration = formatDuration(event.duration_seconds);
+      const why = WAITING_REASONS.en[event.reason] ?? 'it is waiting on you';
+      const ran = duration ? ` after ${duration.en}` : '';
+      return {
+        title: 'Claude · waiting on you',
+        message: [`Stopped${ran} — ${why}.`, where(event), event.detail].filter(Boolean).join('\n'),
       };
     },
     test() {
@@ -219,6 +241,15 @@ const PACKS = {
         message: [`${ran} — ${label}.`, where(event), event.detail].filter(Boolean).join('\n'),
       };
     },
+    turn_waiting(event) {
+      const duration = formatDuration(event.duration_seconds);
+      const why = WAITING_REASONS.tr[event.reason] ?? 'seni bekliyor';
+      const ran = duration ? `${duration.tr} çalıştıktan sonra` : 'Çalışırken';
+      return {
+        title: 'Claude · seni bekliyor',
+        message: [`${ran} durdu — ${why}.`, where(event), event.detail].filter(Boolean).join('\n'),
+      };
+    },
     test() {
       return {
         title: 'Claude usage relay · test',
@@ -229,8 +260,9 @@ const PACKS = {
 };
 
 const PRESENTATION = {
-  // ntfy priority: 1 min, 3 default, 5 max. The reset alert is the one worth
-  // interrupting someone for - it is the moment they can start working again.
+  // ntfy priority: 1 min, 3 default, 5 max. The alerts worth interrupting
+  // someone for are the reset - the moment they can start working again - and
+  // a long job that died, where an hour of waiting just bought them nothing.
   window_start: { priority: 3, tags: ['hourglass_flowing_sand'] },
   window_reset: { priority: 4, tags: ['white_check_mark'] },
   threshold: { priority: 3, tags: ['warning'] },
@@ -241,6 +273,9 @@ const PRESENTATION = {
   // A start that silently did nothing is the one failure that defeats the
   // whole point, so it interrupts.
   start_failed: { priority: 4, tags: ['rotating_light'] },
+  // Waiting outranks finishing: a job that has stopped to ask is burning your
+  // wall clock doing nothing, and only you can unblock it.
+  turn_waiting: { priority: 5, tags: ['raised_hand'] },
   // A long job that finished, and the worse case: one that died after an hour
   // of waiting. Both are worth interrupting someone for.
   turn_done: { priority: 4, tags: ['checkered_flag'] },
