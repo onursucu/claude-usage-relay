@@ -130,5 +130,6 @@ fs.mkdirSync(CONFIG_DIR, { recursive: true });
 if (fs.existsSync(SETTINGS)) fs.copyFileSync(SETTINGS, BACKUP);
 writeJson(SETTINGS, next);
 
-console.log('Installed. Hooks are read when a session starts, so open a new one.');
+console.log('Installed. Sessions already running usually pick this up on their');
+console.log('next turn; if nothing arrives, open a new one.');
 if (fs.existsSync(BACKUP)) console.log(`Previous settings: ${BACKUP}`);

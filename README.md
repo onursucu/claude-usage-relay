@@ -234,12 +234,14 @@ All three are registered with `"async": true`, so Claude Code starts the hook
 and carries straight on. A slow server, an unreachable one, a hung request —
 none of it can make the editor feel stuck.
 
-Hooks are read when a session starts, so open a new one. Then check it works
-without waiting an hour:
+Sessions already running usually pick this up on their next turn; if nothing
+arrives, open a new one.
 
-```bash
-NOTIFY_MIN_TURN_SECONDS=0 claude -p "say hi"
-```
+To check it works without waiting an hour, start a turn in a real session and
+let it run past the threshold. Note that `claude -p` is **not** a useful test:
+Claude Code kills async hooks that are still running when a headless session
+tears down, so the push is cut off before it leaves the machine. For the same
+reason, headless runs do not notify.
 
 The threshold is the setting that matters. `Stop` fires at the end of *every*
 turn and most turns take seconds, so the default 5 minutes is what keeps your
