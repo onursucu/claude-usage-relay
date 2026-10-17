@@ -24,8 +24,15 @@ const WORK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-usage-relay-e2e-'
 const NO_ACCOUNT = path.join(WORK_DIR, 'no-account.json');
 
 const RELAY_TOKEN = 'e2e-token-0000000000';
-const NTFY_PORT = 8899;
-const SERVER_PORT = 8788;
+
+/**
+ * Deliberately odd ports. This suite is meant to be runnable on the very host
+ * that runs the real thing, and 8787/8788 are taken there - 8788 by the
+ * window-starter, which this would otherwise fight for the socket and knock
+ * over. A test that can take down a production service is a bad test.
+ */
+const NTFY_PORT = 18899;
+const SERVER_PORT = 18788;
 
 const results = [];
 const check = (name, ok, detail = '') => {
