@@ -41,6 +41,7 @@ function emptyAccount(report) {
     devices: {},
     tracking: null,
     pending_start: null,
+    start_failure: null,
     source_error: null,
   };
 }
@@ -115,6 +116,10 @@ export function ingestReport({ accountState, report, options, now = Date.now() }
       // window can be opened on request, so only it can confirm one.
       const confirmsPendingStart = key === 'five_hour' && Boolean(state.pending_start);
       if (confirmsPendingStart) state.pending_start = null;
+
+      // A window is open, however it got there, so a run of failed starts is
+      // over: the next failure is news again.
+      if (key === 'five_hour') state.start_failure = null;
 
       // With no previous window we cannot tell whether this one just opened or
       // has been running for hours, so only announce it if it still has almost
@@ -270,12 +275,24 @@ export function recordStartResult({ accountState, report, ok, error, options, no
     state.pending_start = null;
     state.updated_at = nowIso;
 
+    // The schedule retries every few minutes, and a cause like an exhausted
+    // weekly limit outlives every retry. Only the first failure of a run is
+    // worth a push; the rest would repeat it all morning.
+    const firstOfRun = !state.start_failure;
+    const message = String(error ?? 'unknown error');
+    state.start_failure = {
+      since: state.start_failure?.since ?? nowIso,
+      last_at: nowIso,
+      message,
+    };
+
     return {
       state,
-      events: options.onStartFailed ? [{ type: 'start_failed', message: String(error ?? 'unknown error') }] : [],
+      events: options.onStartFailed && firstOfRun ? [{ type: 'start_failed', message }] : [],
     };
   }
 
+  state.start_failure = null;
   state.pending_start = { requested_at: nowIso, source: 'starter' };
   state.updated_at = nowIso;
 

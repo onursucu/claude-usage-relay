@@ -115,6 +115,14 @@ export const config = {
     starterToken: str(process.env.STARTER_TOKEN),
     starterTimeoutMs: num(process.env.STARTER_TIMEOUT_SECONDS, 150) * 1000,
 
+    /**
+     * Which tracked account the starter's credential belongs to, as the agent
+     * reports it (the eight-character id). A `setup-token` credential carries
+     * no identity the server could read, and with two accounts tracked a guess
+     * would file the start under a phantom `claude:default`.
+     */
+    account: str(process.env.START_ACCOUNT),
+
     /** Public URL the phone's notification button posts to. */
     actionUrl: str(process.env.START_ACTION_URL),
 

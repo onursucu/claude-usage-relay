@@ -198,11 +198,12 @@ async function callStarter() {
 }
 
 /**
- * Which account a start request applies to. One install reports one account
- * today, so the single tracked account is the unambiguous answer; the explicit
- * fallback keeps the behaviour defined for a state file that is still empty.
+ * Which account a start request applies to. START_ACCOUNT says so outright;
+ * without it a single tracked account is the unambiguous answer, and the
+ * explicit fallback keeps the behaviour defined for an empty state file.
  */
 function startAccountKey(state) {
+  if (config.start.account) return accountKey('claude', config.start.account);
   const keys = Object.keys(state.accounts);
   return keys.length === 1 ? keys[0] : accountKey('claude', 'default');
 }
@@ -244,7 +245,7 @@ async function handleStart() {
   const ping = await callStarter();
   const { state: nextAccount, events } = recordStartResult({
     accountState: existing,
-    report: { provider: 'claude', account: 'default' },
+    report: { provider: 'claude', account: key.slice(key.indexOf(':') + 1) },
     ok: ping.ok,
     error: ping.error,
     options: detectorOptions,

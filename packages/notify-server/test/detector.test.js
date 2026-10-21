@@ -413,6 +413,38 @@ test('a failed start notifies and leaves nothing pending, so it can be retried',
   assert.equal(decision.allowed, true);
 });
 
+test('repeated start failures push once, until a start succeeds', () => {
+  const fail = (accountState, at) =>
+    recordStartResult({ accountState, ok: false, error: 'rate limited', options: OPTIONS, now: at });
+
+  const first = fail(null, NOW);
+  const second = fail(first.state, NOW + minutes(10));
+  assert.deepEqual(first.events.map((event) => event.type), ['start_failed']);
+  assert.deepEqual(second.events, [], 'a retry failing for the same reason is not news');
+  assert.equal(second.state.start_failure.since, new Date(NOW).toISOString());
+
+  const recovered = recordStartResult({
+    accountState: second.state,
+    ok: true,
+    options: OPTIONS,
+    now: NOW + minutes(20),
+  });
+  assert.equal(recovered.state.start_failure, null);
+  assert.deepEqual(fail(recovered.state, NOW + minutes(30)).events.map((event) => event.type), ['start_failed']);
+});
+
+test('a window opened by hand ends a run of start failures', () => {
+  const failed = recordStartResult({ accountState: null, ok: false, error: 'rate limited', options: OPTIONS, now: NOW });
+  const { state } = ingestReport({
+    accountState: failed.state,
+    report: report({ five_hour: { resets_at: new Date(NOW + minutes(290)).toISOString() } }),
+    options: OPTIONS,
+    now: NOW + minutes(5),
+  });
+
+  assert.equal(state.start_failure, null);
+});
+
 test('the first report after a start confirms it and announces the real window', () => {
   const started = recordStartResult({ accountState: null, ok: true, options: OPTIONS, now: NOW });
 
